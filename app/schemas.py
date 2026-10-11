@@ -42,6 +42,7 @@ class CarOut(CarInput):
     status: str
     image: str | None = None
 
+
 class ReserveInput(BaseModel):
     car_id: int
     expected_rate_kopecks: int | None = Field(default=None, gt=0)

@@ -52,7 +52,7 @@ def main():
                     "business",
                     "Санкт-Петербург, Петроградская набережная, 18",
                     2200,
-                    "images/BMW-3.png"
+                    "images/BMW-3.png",
                 ),
             ]:
                 car = db.scalar(select(Car).where(Car.plate == plate))

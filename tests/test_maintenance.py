@@ -58,3 +58,26 @@ def test_migrate_existing_rental_preserves_data(tmp_path):
         assert result == (900, "Kia Rio", "ABC123", "", None)
         assert db.execute("PRAGMA foreign_key_check").fetchall() == []
         assert db.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 1
+        assert db.execute("SELECT image FROM cars WHERE id=1").fetchone() == (None,)
+    subprocess.run(
+        [sys.executable, "-m", "alembic", "check"],
+        env=env,
+        cwd=root,
+        check=True,
+        capture_output=True,
+    )
+    for _ in range(2):
+        subprocess.run(
+            [sys.executable, "-m", "app.cli", "seed"],
+            env=env,
+            cwd=root,
+            check=True,
+            capture_output=True,
+        )
+    with sqlite3.connect(database) as db:
+        photos = db.execute("SELECT image FROM cars WHERE image IS NOT NULL").fetchall()
+        assert len(photos) == 4
+        assert db.execute("SELECT COUNT(*) FROM cars").fetchone()[0] == 5
+        assert db.execute("SELECT total_kopecks FROM rentals WHERE id=1").fetchone() == (900,)
+        for (photo,) in photos:
+            assert (root / "app" / "static" / photo).is_file()

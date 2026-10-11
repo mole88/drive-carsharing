@@ -35,7 +35,7 @@ class Car(Base):
     fuel: Mapped[int] = mapped_column(default=100)
     rate_kopecks: Mapped[int]
     status: Mapped[str] = mapped_column(default="available")
-    image: Mapped[str | None] = mapped_column(nullable=True)
+    image: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
 
 class Rental(Base):

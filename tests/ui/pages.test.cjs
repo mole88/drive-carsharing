@@ -16,6 +16,7 @@ const car = {
   fuel: 80,
   rate_kopecks: 900,
   status: "available",
+  image: "images/kiario.png",
 };
 async function screen(name, role = "user", query = "") {
   const user =
@@ -134,8 +135,12 @@ for (const [name, role] of [
       assert.equal(page.w.document.querySelectorAll("h1").length, 1);
       if (name !== "cars" && name !== "admin-fleet")
         assert(!page.requests.some((r) => r.url.startsWith("/api/cars")));
-      if (name === "cars")
+      if (name === "cars") {
         assert.equal(page.w.document.querySelectorAll(".card").length, 1);
+        const photo = page.w.document.querySelector(".card .car-image img");
+        assert.equal(photo.getAttribute("src"), "/static/images/kiario.png");
+        assert.equal(photo.getAttribute("alt"), "Kia Rio");
+      }
     } finally {
       page.close();
     }
