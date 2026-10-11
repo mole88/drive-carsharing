@@ -30,6 +30,7 @@
     coachIndex: 0,
     coachTimer: 0,
     ducked: false,
+    goPlayed: false,
     lastCheer: -99,
     shownHearts: -1,
     shownHeat: -1,
@@ -377,6 +378,7 @@
         if (!state.calm)
           state.shake = Math.min(26, state.shake + (e.vip ? 16 : 9));
         if (e.combo >= 5 && e.combo % 5 === 0) cheer();
+        if (Math.random() < 0.06) audio.sfx("babachai");
       }
       if (e.type === "damage" || e.type === "ram") {
         state.flash = 0.32;
@@ -698,6 +700,10 @@
       state.finalCall = true;
       worldPop(world, "ФИНАЛ — 10 СЕКУНД", W.width / 2, 380, "gold", 1.6);
     }
+    if (!world.attract && !state.goPlayed && world.time >= 1.2) {
+      state.goPlayed = true;
+      audio.sfx("go");
+    }
     const combo = $("hud-combo");
     if (p.combo > 1) {
       combo.hidden = false;
@@ -802,6 +808,7 @@
     );
     worldPop(state.world, "ПОЕХАЛИ!", p.x, p.y - 230, "combo", 1.1, 1.25);
     state.finalCall = false;
+    state.goPlayed = false;
     state.lastCheer = -99;
     const best = records().cars["car" + state.world.car.id];
     state.recordScore = best ? best.best : 0;
@@ -813,7 +820,6 @@
       : "";
     document.querySelector(".hud-score").classList.remove("beat");
     audio.music(true, true);
-    audio.sfx("start");
     canvas.focus({ preventScroll: true });
     $("drive-stage").scrollIntoView({ block: "center", behavior: "instant" });
   }
@@ -911,8 +917,17 @@
     if (result.knockdowns > 0 && result.bribes === 0 && result.failed > 0)
       note.push("Взятка дешевле ремонта: копи купюры и жми ПРОБЕЛ.");
     $("result-note").textContent = note.join(" ");
-    audio.sfx(result.won ? "win" : "lose");
-    if (result.won) audio.sfx("cheer");
+    if (result.reason === "wrecked") {
+      audio.sfx("lose");
+      audio.sfx("loseWreck");
+    } else if (result.reason === "quit") {
+      audio.sfx("lose");
+    } else if (result.won) {
+      audio.sfx("win");
+    } else {
+      audio.sfx("lose");
+      audio.sfx("defeat");
+    }
     setMode("result");
   }
 
@@ -1019,6 +1034,13 @@
       plate: car.plate,
     });
     setMode("intro");
+    const rulesLoop = () => {
+      audio.unlock();
+      if (state.mode === "intro") audio.loop(true);
+    };
+    window.addEventListener("pointerdown", rulesLoop, { once: true });
+    window.addEventListener("keydown", rulesLoop, { once: true });
+    rulesLoop();
     if ($("drive-calm").getAttribute("aria-pressed") === "true")
       state.calm = true;
     $("drive-start").addEventListener("click", start);

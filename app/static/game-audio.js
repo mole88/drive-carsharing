@@ -1,19 +1,28 @@
-/* Звук мини-игры: эффекты синтезируются WebAudio, фоном играет трек из /static/audio. */
+/* Звук мини-игры: эффекты синтезируются WebAudio, поверх играют присланные реплики,
+   фоном — трек из /static/audio. Всё выровнено по измеренной громкости (RMS). */
 (function (global) {
   "use strict";
 
   const TRACK_SRC = "/static/audio/testdrive.mp3";
-  const TRACK_LEVEL = 0.42;
   const TRACK_FADE_IN = 2600;
   const TRACK_FADE_OUT = 600;
-  const TRACK_DUCK = 0.16;
-  /* Присланные эффекты кладутся в app/static/audio/<файл>.mp3 и объявляются здесь
-     ключом = имя слота. Пока файла нет (или строка закомментирована) — играет синтез.
-     Слоты: knock vip cash power nitro siren encounter bribe broke protocol damage
-     graze ram droneLock droneDive droneKill droneMiss spin cone phase shield
-     start win lose cheer. */
+  const TRACK_FALLBACK_LEVEL = 0.08;
+  const DUCK_RATIO = 0.32;
+  /* Целевая громкость по RMS: реплики слышны поверх трека и эффектов. */
+  const LEVELS = { comment: 0.085, music: 0.032, loop: 0.06 };
+  const GAIN_LIMIT = { min: 0.02, max: 1 };
+  const LOOP_SRC = "/static/audio/mellstroy-business-meme.mp3";
+  const LOOP_FADE = 0.45;
+  /* Реплики: ключ = слот события, layer играет вместе с синтезом.
+     Ключи принимаются и в snake_case (drone_lock == droneLock). */
   const SAMPLES = {
-    cheer: "audio/raduetsa.mp3",
+    go: "audio/mellstroy-poehali.mp3",
+    win: "audio/mellstroy-raduetsa-edited.mp3",
+    loseWreck: "audio/mellstroy-stop-stop-stop-stop.mp3",
+    defeat: "audio/melstroi-vozmushchaetsia.mp3",
+    droneLock: "audio/mellstroy-krik1.mp3",
+    droneDive: "audio/mellstroy-krik2.mp3",
+    babachai: "audio/mellstroy-babachai.mp3",
   };
 
   let ctx = null;
@@ -30,7 +39,18 @@
   let track = null;
   let trackRamp = null;
   let trackBroken = false;
+  let trackLevel = TRACK_FALLBACK_LEVEL;
+  let duckRelease = null;
   const samples = {};
+  const loudness = {};
+  const levels = { comment: {}, music: TRACK_FALLBACK_LEVEL, loop: LEVELS.loop };
+  let loopElements = [];
+  let loopTimer = null;
+  let loopActive = 0;
+  let loopOn = false;
+  let normalized = false;
+  let analyser = null;
+  let tapData = null;
 
   const BPM = 152;
   const BASS = [0, 0, 7, 0, 3, 0, 7, 5];
@@ -120,12 +140,12 @@
       );
     },
     cash() {
-      tone({ from: 1500, dur: 0.05, type: "square", gain: 0.14 });
-      tone({ from: 2200, dur: 0.07, type: "square", gain: 0.12, delay: 0.045 });
+      tone({ from: 1500, dur: 0.05, type: "square", gain: 0.3 });
+      tone({ from: 2200, dur: 0.07, type: "square", gain: 0.26, delay: 0.045 });
     },
     power() {
       [0, 5, 9, 14].forEach((s, i) =>
-        tone({ from: freq(s + 8), dur: 0.13, type: "triangle", gain: 0.22, delay: i * 0.045 }),
+        tone({ from: freq(s + 8), dur: 0.13, type: "triangle", gain: 0.32, delay: i * 0.045 }),
       );
     },
     nitro() {
@@ -180,7 +200,7 @@
       noise({ dur: 0.4, from: 600, to: 1400, gain: 0.1 });
     },
     cone() {
-      noise({ dur: 0.14, from: 1200, to: 500, gain: 0.14, type: "bandpass" });
+      noise({ dur: 0.16, from: 1200, to: 500, gain: 0.34, type: "bandpass" });
     },
     phase() {
       [0, 7, 12, 16].forEach((s, i) =>
@@ -209,6 +229,10 @@
       [0, 7, 12, 16, 19].forEach((s, i) =>
         tone({ from: freq(s + 12), dur: 0.22, type: "square", gain: 0.2, delay: i * 0.07 }),
       );
+    },
+    go() {
+      tone({ from: 300, to: 900, dur: 0.4, type: "sawtooth", gain: 0.22, filter: "bandpass" });
+      tone({ from: 900, dur: 0.2, type: "square", gain: 0.18, delay: 0.4 });
     },
   };
 
@@ -275,6 +299,183 @@
     }, 50);
   }
 
+  const canonical = (name) => String(name).replace(/_+([a-zA-Z])/g, (m, c) => c.toUpperCase());
+
+  function urlOf(file) {
+    return file.startsWith("/") ? file : "/static/" + file;
+  }
+
+  function slotOf(name) {
+    const key = canonical(name);
+    return Object.keys(SAMPLES).find((slot) => canonical(slot) === key) ? key : null;
+  }
+
+  async function measure(url) {
+    if (loudness[url]) return loudness[url];
+    loudness[url] = { rms: 0, duration: 0 };
+    try {
+      const context = ctx || init();
+      const response = await fetch(url);
+      const raw = await response.arrayBuffer();
+      const buffer = await context.decodeAudioData(raw);
+      let sum = 0;
+      let n = 0;
+      for (let ch = 0; ch < buffer.numberOfChannels; ch++) {
+        const data = buffer.getChannelData(ch);
+        for (let i = 0; i < data.length; i += 2) {
+          const v = data[i];
+          sum += v * v;
+          n += 1;
+        }
+      }
+      loudness[url] = { rms: Math.sqrt(sum / Math.max(1, n)) || 0.05, duration: buffer.duration };
+    } catch (error) {
+      void error;
+      loudness[url] = { rms: 0, duration: 0 };
+    }
+    return loudness[url];
+  }
+
+  function gainTo(rms, target) {
+    if (!rms) return target;
+    return Math.max(GAIN_LIMIT.min, Math.min(GAIN_LIMIT.max, target / rms));
+  }
+
+  const durations = {};
+
+  async function normalizeAll() {
+    const jobs = [measure(TRACK_SRC).then((m) => (levels.music = gainTo(m.rms, LEVELS.music)))];
+    jobs.push(measure(LOOP_SRC).then((m) => (levels.loop = gainTo(m.rms, LEVELS.loop))));
+    for (const slot of Object.keys(SAMPLES)) {
+      const url = urlOf(SAMPLES[slot]);
+      jobs.push(
+        measure(url).then((m) => {
+          levels.comment[slot] = gainTo(m.rms, LEVELS.comment);
+          durations[slot] = m.duration;
+          if (samples[slot]) samples[slot].volume = levels.comment[slot];
+        }),
+      );
+    }
+    await Promise.all(jobs);
+    if (track) {
+      trackLevel = levels.music;
+      if (musicOn && !muted) rampTrack(trackLevel, 400);
+    }
+    return levels;
+  }
+
+  function voice(slot) {
+    if (samples[slot]) return samples[slot];
+    if (typeof global.Audio !== "function") return null;
+    const el = new global.Audio(urlOf(SAMPLES[slot]));
+    el.preload = "auto";
+    el.volume = levels.comment[slot] || LEVELS.comment;
+    samples[slot] = el;
+    return el;
+  }
+
+  function playSample(slot) {
+    if (muted) return;
+    const el = voice(slot);
+    if (!el) return;
+    try {
+      el.currentTime = 0;
+      el.volume = levels.comment[slot] || LEVELS.comment;
+      el.play().catch(() => {});
+    } catch (error) {
+      void error;
+    }
+    duckFor(Math.max(0.6, durations[slot] || 1));
+  }
+
+  function duckFor(seconds) {
+    if (!track || trackBroken || !musicOn) return;
+    rampTrack(trackLevel * DUCK_RATIO, 120);
+    if (duckRelease) clearTimeout(duckRelease);
+    duckRelease = setTimeout(() => {
+      duckRelease = null;
+      if (musicOn && !muted) rampTrack(trackLevel, 400);
+    }, seconds * 1000 + 220);
+  }
+
+  function loopElement(index) {
+    if (loopElements[index]) return loopElements[index];
+    const el = new global.Audio(LOOP_SRC);
+    el.preload = "auto";
+    el.loop = false;
+    el.volume = 0;
+    loopElements[index] = el;
+    return el;
+  }
+
+  function fadeElement(el, to, ms, then) {
+    const from = el.volume;
+    const steps = Math.max(1, Math.round(ms / 50));
+    let done = 0;
+    const timer = setInterval(() => {
+      done += 1;
+      const t = Math.min(1, done / steps);
+      el.volume = Math.max(0, Math.min(1, from + (to - from) * t));
+      if (t >= 1) {
+        clearInterval(timer);
+        if (then) then();
+      }
+    }, 50);
+    return timer;
+  }
+
+  function crossfade(from, to, ms, level, then) {
+    const steps = Math.max(1, Math.round(ms / 40));
+    let done = 0;
+    to.volume = 0;
+    const timer = setInterval(() => {
+      done += 1;
+      const t = Math.min(1, done / steps);
+      const angle = (t * Math.PI) / 2;
+      const gain = muted ? 0 : level;
+      from.volume = gain * Math.cos(angle);
+      to.volume = gain * Math.sin(angle);
+      if (t >= 1) {
+        clearInterval(timer);
+        if (then) then();
+      }
+    }, 40);
+    return timer;
+  }
+
+  function tickLoop() {
+    if (!loopOn) return;
+    const current = loopElement(loopActive);
+    if (!current.duration || !isFinite(current.duration)) {
+      if (current.paused) startLoopSide(current);
+      return;
+    }
+    if (current.duration - current.currentTime > LOOP_FADE) return;
+    const next = loopElement(loopActive === 0 ? 1 : 0);
+    try {
+      next.currentTime = 0;
+      next.play().catch(() => {});
+    } catch (error) {
+      void error;
+    }
+    crossfade(current, next, LOOP_FADE * 1000, levels.loop, () => {
+      current.pause();
+      current.volume = 0;
+    });
+    loopActive = loopActive === 0 ? 1 : 0;
+  }
+
+  function startLoopSide(el) {
+    try {
+      el.currentTime = 0;
+      el.volume = 0;
+      el.play().catch(() => {});
+      fadeElement(el, muted ? 0 : levels.loop, LOOP_FADE * 1000);
+    } catch (error) {
+      void error;
+    }
+  }
+
   const api = {
     available() {
       return !!(global.AudioContext || global.webkitAudioContext);
@@ -282,13 +483,24 @@
     unlock() {
       init();
       if (ctx && ctx.state === "suspended") ctx.resume();
+      if (ctx && !normalized) {
+        normalized = true;
+        normalizeAll();
+      }
       return !!ctx;
     },
     setMuted(value) {
       muted = !!value;
       if (master) master.gain.value = muted ? 0 : 0.9;
+      for (const [slot, el] of Object.entries(samples))
+        if (el) el.volume = muted ? 0 : levels.comment[slot] || LEVELS.comment;
+      for (const el of loopElements) {
+        if (!el) continue;
+        if (muted) el.volume = 0;
+        else if (loopOn) fadeElement(el, levels.loop, 250);
+      }
       if (track && !trackBroken) {
-        rampTrack(muted ? 0 : musicOn ? TRACK_LEVEL : 0, 250);
+        rampTrack(muted ? 0 : musicOn ? trackLevel : 0, 250);
         if (!muted && musicOn && track.paused) track.play().catch(() => {});
       }
       return muted;
@@ -331,25 +543,19 @@
     sfx(name) {
       if (!ctx) api.unlock();
       if (muted) return;
-      const file = SAMPLES[name];
-      if (file && typeof global.Audio === "function") {
-        const url = file.startsWith("/") ? file : "/static/" + file;
-        if (!samples[name]) samples[name] = new global.Audio(url);
-        const el = samples[name];
-        try {
-          el.currentTime = 0;
-          el.play().catch(() => {});
-        } catch (error) {
-          void error;
-        }
-        return;
-      }
-      if (!ctx || !SFX[name]) return;
-      SFX[name]();
+      if (ctx && SFX[name]) SFX[name]();
+      const slot = slotOf(name);
+      if (slot) playSample(slot);
+    },
+    comment(name) {
+      if (!ctx) api.unlock();
+      const slot = slotOf(name);
+      if (slot) playSample(slot);
     },
     music(on, restart) {
       if (!ctx) api.unlock();
       musicOn = !!on;
+      if (musicOn) api.loop(false);
       const el = ensureTrack();
       if (el && !trackBroken) {
         if (musicOn) {
@@ -367,7 +573,7 @@
               trackBroken = true;
               startSynth();
             });
-          rampTrack(muted ? 0 : TRACK_LEVEL, restart ? TRACK_FADE_IN : 900);
+          rampTrack(muted ? 0 : trackLevel, restart ? TRACK_FADE_IN : 900);
         } else {
           rampTrack(0, TRACK_FADE_OUT);
         }
@@ -377,24 +583,103 @@
       if (musicOn) startSynth();
       else stopSynth();
     },
+    loop(on) {
+      if (typeof global.Audio !== "function") return;
+      const wanted = !!on;
+      if (wanted === loopOn) return;
+      loopOn = wanted;
+      if (loopOn) {
+        if (musicOn) api.music(false);
+        loopActive = 0;
+        startLoopSide(loopElement(0));
+        if (!loopTimer) loopTimer = setInterval(tickLoop, 60);
+      } else {
+        if (loopTimer) {
+          clearInterval(loopTimer);
+          loopTimer = null;
+        }
+        for (const el of loopElements) {
+          if (!el) continue;
+          fadeElement(el, 0, 400, () => el.pause());
+        }
+      }
+    },
+    async normalize() {
+      if (!ctx) api.unlock();
+      return normalizeAll();
+    },
     duck(on) {
-      if (!track || trackBroken) return;
-      rampTrack(on ? TRACK_DUCK : muted ? 0 : TRACK_LEVEL, on ? 220 : 500);
+      if (!track || trackBroken || !musicOn) return;
+      if (duckRelease) {
+        clearTimeout(duckRelease);
+        duckRelease = null;
+      }
+      rampTrack(on ? trackLevel * DUCK_RATIO : muted ? 0 : trackLevel, on ? 220 : 500);
+    },
+    tap(on) {
+      if (!ctx) api.unlock();
+      if (!ctx) return null;
+      if (on && !analyser) {
+        analyser = ctx.createAnalyser();
+        analyser.fftSize = 2048;
+        master.connect(analyser);
+        tapData = new Float32Array(analyser.fftSize);
+      }
+      if (!on && analyser) {
+        master.disconnect(analyser);
+        analyser = null;
+      }
+      return !!analyser;
+    },
+    peak() {
+      if (!analyser) return null;
+      analyser.getFloatTimeDomainData(tapData);
+      let peak = 0;
+      let sum = 0;
+      for (let i = 0; i < tapData.length; i++) {
+        const v = Math.abs(tapData[i]);
+        if (v > peak) peak = v;
+        sum += tapData[i] * tapData[i];
+      }
+      return { peak: +peak.toFixed(3), rms: +Math.sqrt(sum / tapData.length).toFixed(3) };
+    },
+    levels() {
+      return {
+        music: Number(trackLevel.toFixed(3)),
+        loop: Number(levels.loop.toFixed(3)),
+        comments: Object.fromEntries(
+          Object.keys(levels.comment).map((k) => [k, Number(levels.comment[k].toFixed(3))]),
+        ),
+      };
     },
     info() {
       return {
         state: ctx ? ctx.state : "uninitialised",
         muted,
         music: musicOn,
+        loop: loopOn,
         available: api.available(),
         track: trackBroken ? "fallback-synth" : track ? "testdrive.mp3" : "idle",
-        trackVolume: track ? Number(track.volume.toFixed(2)) : 0,
+        trackVolume: track ? Number(track.volume.toFixed(3)) : 0,
         trackPlaying: track ? !track.paused && !track.ended : false,
         trackTime: track ? Number(track.currentTime.toFixed(1)) : 0,
         trackReady: track ? track.readyState : -1,
-        samples: Object.keys(samples).concat(
-          Object.keys(SAMPLES).filter((k) => !samples[k]),
-        ),
+        levels: api.levels(),
+        voices: Object.keys(samples),
+        loopInfo: {
+          on: loopOn,
+          active: loopActive,
+          sides: loopElements.map((el) =>
+            el
+              ? {
+                  t: Number(el.currentTime.toFixed(2)),
+                  vol: Number(el.volume.toFixed(3)),
+                  dur: Number.isFinite(el.duration) ? +el.duration.toFixed(2) : null,
+                  paused: el.paused,
+                }
+              : null,
+          ),
+        },
       };
     },
     suspend() {
