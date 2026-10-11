@@ -1,55 +1,61 @@
 <section id="drive" class="drive">
-  <div class="drive-top">
-    <div>
-      <p class="eyebrow">ТЕСТДРАЙВ</p>
-      <h1 id="drive-title">Ночная смена</h1>
-      <p id="drive-sub" class="drive-sub">
-        Выберите автомобиль в каталоге — и он поедет по ночному проспекту.
-      </p>
-    </div>
-    <div class="drive-settings">
-      <div class="drive-modes">
-        <button id="drive-sound" type="button" aria-pressed="false">
-          Звук: вкл
-        </button>
-        <button id="drive-calm" type="button" aria-pressed="false">
-          Без миганий
-        </button>
-        <button
-          id="drive-volume"
-          type="button"
-          aria-pressed="false"
-          aria-controls="drive-volume-panel"
-        >
-          Громкость
-        </button>
-      </div>
-      <div class="drive-volume" id="drive-volume-panel" hidden>
-        <div class="volume-row">
-          <label for="vol-music">Музыка</label>
-          <input id="vol-music" type="range" min="0" max="150" step="5" value="100" />
-          <output id="vol-music-value" for="vol-music">100%</output>
-        </div>
-        <div class="volume-row">
-          <label for="vol-sfx">Звуки и реплики</label>
-          <input id="vol-sfx" type="range" min="0" max="150" step="5" value="100" />
-          <output id="vol-sfx-value" for="vol-sfx">100%</output>
-        </div>
-        <p class="volume-note">Настройка сохраняется в этом браузере.</p>
-      </div>
-    </div>
-  </div>
-
   <div class="drive-stage" id="drive-stage">
     <canvas
       id="drive-canvas"
       tabindex="0"
       width="900"
       height="1200"
-      aria-label="Игровое поле «Ночная смена»"
+      aria-label="Ночная смена"
       role="img"
     ></canvas>
-
+    <div class="drive-top">
+      <a href="/trips" aria-label="Мои поездки">←</a>
+      <h1 id="drive-title">Поездка</h1>
+      <div class="drive-settings">
+        <div class="drive-modes">
+          <button id="drive-sound" type="button" aria-pressed="false">
+            Звук: вкл
+          </button>
+          <button id="drive-calm" type="button" aria-pressed="false">
+            Без миганий
+          </button>
+          <button
+            id="drive-volume"
+            type="button"
+            aria-pressed="false"
+            aria-controls="drive-volume-panel"
+          >
+            Громкость
+          </button>
+        </div>
+        <div class="drive-volume" id="drive-volume-panel" hidden>
+          <div class="volume-row">
+            <label for="vol-music">Музыка</label>
+            <input
+              id="vol-music"
+              type="range"
+              min="0"
+              max="150"
+              step="5"
+              value="100"
+            />
+            <output id="vol-music-value" for="vol-music">100%</output>
+          </div>
+          <div class="volume-row">
+            <label for="vol-sfx">Звуки и реплики</label>
+            <input
+              id="vol-sfx"
+              type="range"
+              min="0"
+              max="150"
+              step="5"
+              value="100"
+            />
+            <output id="vol-sfx-value" for="vol-sfx">100%</output>
+          </div>
+        </div>
+      </div>
+    </div>
     <video
       id="caster-source"
       class="caster-source"
@@ -67,7 +73,7 @@
           <small id="hud-record" hidden></small>
         </div>
         <div class="hud-chip hud-cash">
-          <span class="hud-label">КОШЕЛЁК</span
+          <span class="hud-label">КАССА</span
           ><strong id="hud-cash">50 ₽</strong>
         </div>
         <div class="hud-chip hud-level">
@@ -92,7 +98,7 @@
       <div class="hud-economy">
         <span>Выручка <b id="hud-revenue">0 ₽</b></span>
         <span>Аренда <b id="hud-rent">0 ₽</b> · <b id="hud-rate"></b></span>
-        <span>Прибыль <b id="hud-profit">0 ₽</b></span>
+        <span>Игра: прибыль <b id="hud-profit">0 ₽</b></span>
         <span>По тарифу <b id="hud-clock">0 мин</b></span>
         <small id="hud-debt" hidden></small>
       </div>
@@ -124,9 +130,17 @@
         aria-label="Активные бонусы"
       ></div>
       <div class="hud-nitro">
-        <canvas id="drive-caster" class="drive-caster" width="240" height="240" aria-hidden="true"></canvas>
+        <canvas
+          id="drive-caster"
+          class="drive-caster"
+          width="240"
+          height="240"
+          aria-hidden="true"
+        ></canvas>
         <div class="nitro-track"><i id="hud-nitro-fill"></i></div>
-        <span class="nitro-hint"><span class="nitro-key">SHIFT · </span>нитро</span>
+        <span class="nitro-hint"
+          ><span class="nitro-key">SHIFT · </span>нитро</span
+        >
       </div>
       <div class="hud-speed">
         <strong id="hud-speed">0</strong><span>км/ч</span>
@@ -143,115 +157,67 @@
     </div>
 
     <div class="overlay" id="drive-intro">
-      <div class="overlay-card">
-        <p class="eyebrow">ТЕСТДРАЙВ</p>
-        <h2 id="intro-car">Ночная смена</h2>
+      <div class="overlay-card narrow">
+        <h2 id="intro-car">Загружаем поездку…</h2>
         <canvas
           id="car-preview"
           class="car-preview"
           width="180"
           height="240"
+          aria-label="Ваш автомобиль"
           role="img"
-          aria-label="Скин выбранного автомобиля"
         ></canvas>
-        <p id="intro-perk" class="intro-perk"></p>
-        <p id="intro-specs" class="intro-specs"></p>
-        <p id="intro-tariff" class="intro-tariff"></p>
+        <p id="intro-perk" role="status"></p>
+        <p id="intro-tariff"></p>
         <div class="actions">
           <button class="primary" id="drive-start" type="button" disabled>
-            Поехали
-          </button>
-          <a href="/cars">Другая машина</a>
+            Поехали</button
+          ><a href="/cars">Автомобили</a>
         </div>
-        <p class="touch-instructions">Веди пальцем по дороге — машина поворачивает и разгоняется. Нитро и взятка — кнопки справа.</p>
+        <p class="touch-instructions">Веди пальцем по дороге.</p>
         <details class="intro-help">
-          <summary>Управление и правила</summary>
-          <div class="intro-grid">
-          <div>
-            <h3>Правила</h3>
-            <ul class="rules">
-              <li>Едешь бесконечно: город давит всё сильнее каждую минуту.</li>
-              <li>Сбивай проституток подряд — цепочка множит очки и наличность.</li>
-              <li>Розыск поднимает патрули и БПЛА. Патруль просит договориться — <kbd>ПРОБЕЛ</kbd>.</li>
-              <li>Ямы и лежачие патрули снимают бампер, масло крутит, конусы тормозят.</li>
-              <li>С 7-й минуты едет <b>облава</b>: не жмёшь <kbd>W</kbd> — оцепление накрывает.</li>
-              <li>Аренда капает по ускоренному времени. Верни машину в плюс — заберёшь кассу.</li>
-            </ul>
-          </div>
-          <div>
-            <h3>Клавиши</h3>
-            <ul class="keys">
-              <li><kbd>A</kbd> <kbd>D</kbd> — руль</li>
-              <li><kbd>W</kbd> <kbd>S</kbd> — газ / тормоз</li>
-              <li><kbd>ПРОБЕЛ</kbd> — взятка</li>
-              <li><kbd>SHIFT</kbd> — нитро: таран и сквозь ямы</li>
-              <li><kbd>V</kbd> — вернуть машину</li>
-              <li><kbd>P</kbd> · <kbd>R</kbd> · <kbd>M</kbd> — пауза · заново · звук</li>
-            </ul>
-          </div>
-          </div>
+          <summary>Управление</summary>
+          <p>
+            A/D — руль · W/S — газ/тормоз<br />Shift — нитро · пробел —
+            взятка<br />P — пауза · V — завершить
+          </p>
         </details>
-        <div class="board" id="board-intro" hidden></div>
-        <p class="intro-record" id="intro-record" hidden></p>
       </div>
     </div>
-
     <div class="overlay" id="drive-pause" hidden>
       <div class="overlay-card narrow">
         <h2>Пауза</h2>
-        <p>Город подождёт. Облава — нет.</p>
-        <ul class="keys pause-keys">
-          <li>
-            <kbd>A</kbd> <kbd>D</kbd> — руль, <kbd>W</kbd> <kbd>S</kbd> — газ и
-            тормоз
-          </li>
-          <li><kbd>ПРОБЕЛ</kbd> — взятка, <kbd>SHIFT</kbd> — нитро</li>
-          <li><kbd>V</kbd> — вернуть машину и забрать кассу</li>
-          <li><kbd>R</kbd> — новая смена, <kbd>M</kbd> — звук</li>
-        </ul>
+        <p>A/D — руль · W/S — газ<br />Shift — нитро · пробел — взятка</p>
         <div class="actions">
-          <button class="primary" id="resume" type="button">Продолжить</button>
-          <button id="quit" type="button">Вернуть машину</button>
+          <button class="primary" id="resume" type="button">Продолжить</button
+          ><button id="quit" type="button">Завершить поездку</button>
         </div>
       </div>
     </div>
-
     <div class="overlay" id="drive-result" hidden>
       <div class="overlay-card result">
-        <p class="eyebrow" id="result-kicker">ЗАЕЗД ОКОНЧЕН</p>
+        <p class="eyebrow" id="result-kicker">ПОЕЗДКА ЗАВЕРШЕНА</p>
         <img id="result-gif" class="result-gif" alt="" />
         <div class="grade">
-          <strong id="result-grade">A</strong>
+          <strong id="result-grade"></strong>
           <div>
-            <h2 id="result-title">Легенда района</h2>
+            <h2 id="result-title"></h2>
             <p id="result-score"></p>
-            <p class="result-meta" id="result-meta"></p>
-            <p class="result-profit">
-              Прибыль: <strong id="result-profit"></strong>
-            </p>
-            <p
-              class="result-stars"
-              id="result-stars"
-              aria-label="Медали за смену"
-            ></p>
-            <p class="result-rank" id="result-rank"></p>
+            <p id="result-meta"></p>
+            <p class="result-stars" id="result-stars" aria-label="Медали"></p>
           </div>
         </div>
         <ul class="stats" id="result-stats"></ul>
-        <div class="board" id="board-result" hidden></div>
-        <p class="result-note" id="result-note"></p>
+        <p id="result-rank" role="status"></p>
+        <button id="result-retry" type="button" hidden>
+          Повторить сохранение
+        </button>
         <div class="actions">
-          <button class="primary" id="again" type="button">Ещё смена</button>
-          <a href="/trips">Мои поездки</a>
-          <a href="/cars">Сменить машину</a>
+          <a class="primary" href="/cars">Ещё поездка</a
+          ><a id="result-receipt" hidden>Итоги ↗</a
+          ><a href="/leaderboard">Рейтинг</a>
         </div>
       </div>
     </div>
-
   </div>
-
-  <p class="drive-disclaimer">
-    Вымышленная сатира 18+: мультяшные силуэты и звёзды вместо жестокости,
-    совпадения с реальными улицами и службами случайны.
-  </p>
 </section>

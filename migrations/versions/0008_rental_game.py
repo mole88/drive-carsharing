@@ -11,7 +11,16 @@ depends_on = None
 
 def upgrade():
     op.add_column("rentals", sa.Column("game_result", sa.JSON(), nullable=True))
-    with op.batch_alter_table("game_scores") as batch:
+    with op.batch_alter_table(
+        "game_scores",
+        table_args=(
+            sa.CheckConstraint("score >= 0", name="ck_game_score_nonnegative"),
+            sa.CheckConstraint("level >= 1", name="ck_game_level_positive"),
+            sa.CheckConstraint("reason IN ('wrecked','broke','quit')", name="ck_game_reason"),
+        )
+        if op.get_bind().dialect.name == "sqlite"
+        else (),
+    ) as batch:
         batch.add_column(sa.Column("rental_id", sa.Integer(), nullable=True))
         batch.create_foreign_key("fk_game_score_rental", "rentals", ["rental_id"], ["id"])
 

@@ -123,3 +123,46 @@ def test_photo_backfill_preserves_custom_photos_and_car_details(tmp_path):
         assert db.execute(
             "SELECT DISTINCT address,fuel,rate_kopecks,status FROM cars"
         ).fetchall() == [("Saved address", 37, 1733, "maintenance")]
+
+
+def test_rental_game_migration_preserves_legacy_scores_and_constraints(tmp_path):
+    database = tmp_path / "game-migration.db"
+    env = {**os.environ, "DATABASE_URL": f"sqlite:///{database}"}
+    root = Path(__file__).resolve().parents[1]
+
+    def migrate(command, revision):
+        subprocess.run(
+            [sys.executable, "-m", "alembic", command, revision],
+            env=env,
+            cwd=root,
+            check=True,
+            capture_output=True,
+        )
+
+    migrate("upgrade", "0007")
+    with sqlite3.connect(database) as db:
+        db.execute(
+            "INSERT INTO users (id,email,name,password_hash,is_admin) VALUES (1,'old@example.com','Old','hash',0)"
+        )
+        db.execute(
+            "INSERT INTO game_scores (id,user_id,week,car_name,category,score,level,knockdowns,drones,bribes,profit_kopecks,duration_seconds,reason,created_at,updated_at) VALUES (1,1,'2026-W40','Kia Rio','economy',100000,5,30,1,2,9000,120,'quit','2026-10-01','2026-10-01')"
+        )
+        original = db.execute("SELECT * FROM game_scores").fetchone()
+    migrate("upgrade", "head")
+    with sqlite3.connect(database) as db:
+        upgraded = db.execute("SELECT * FROM game_scores").fetchone()
+        assert upgraded[:-1] == original and upgraded[-1] is None
+        assert db.execute("PRAGMA foreign_key_check").fetchall() == []
+        for statement in [
+            "UPDATE game_scores SET score=-1",
+            "UPDATE game_scores SET level=0",
+            "UPDATE game_scores SET reason='invalid'",
+        ]:
+            with pytest.raises(sqlite3.IntegrityError):
+                db.execute(statement)
+    migrate("downgrade", "0007")
+    with sqlite3.connect(database) as db:
+        assert db.execute("SELECT * FROM game_scores").fetchone() == original
+        with pytest.raises(sqlite3.IntegrityError):
+            db.execute("UPDATE game_scores SET score=-1")
+    migrate("upgrade", "head")

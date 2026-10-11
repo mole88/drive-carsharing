@@ -1,60 +1,228 @@
-const assert=require('node:assert/strict');
-const {chromium}=require('playwright');
-require('node:fs').mkdirSync('tmp',{recursive:true});
-const target=process.argv[2]||'http://127.0.0.1:8000';
-(async()=>{const browser=await chromium.launch({headless:true,channel:'chrome'});try{
- for(const [name,width,height,mobile] of [['desktop',1440,1000,false],['phone',390,844,true],['small-phone',320,568,true],['landscape',844,390,true]]){
-  const page=await browser.newPage({viewport:{width,height},isMobile:mobile,hasTouch:mobile});
-  const errors=[];page.on('pageerror',e=>errors.push(e.message));
-  await page.goto(target+'/drive?car=1',{waitUntil:'domcontentloaded'});
-  await page.waitForFunction(()=>window.DriveGame&&!document.querySelector('#drive-start').disabled);
-  await page.locator('#drive-stage').screenshot({path:`tmp/ui-after-${name}-intro.png`});
-  await page.locator('#drive-start').click();
-  await page.waitForFunction(()=>DriveGame.state.world.time>2);
-  await page.waitForFunction(()=>{const c=document.querySelector('#drive-caster');return c.height>0&&c.getContext('2d').getImageData(0,0,c.width,c.height).data.some((v,i)=>i%4===3&&v>100)});
-  const measurements=await page.evaluate(()=>{
-    const g=DriveGame;g.togglePause(true);document.querySelector('#drive-pause').hidden=true;
-    const box=id=>{const r=document.querySelector(id).getBoundingClientRect();return {x:r.x,y:r.y,width:r.width,height:r.height,bottom:r.bottom,right:r.right}};
-    const ids=['.hud-row-2','.hud-actions','.hud-nitro','.hud-economy','#hud-retire','#hud-heat','#hud-hearts'];
-    g.state.world.player.combo=1;g.hud(0);
-    const before=ids.map(box);
-    g.state.world.player.combo=2;g.state.world.player.chain=2;g.hud(0);
-    const after=ids.map(box);
-    const c=document.querySelector('#drive-caster'),ctx=c.getContext('2d'),data=ctx.getImageData(0,0,c.width,c.height).data;
-    let alphaBottom=0;for(let y=0;y<c.height;y++)for(let x=0;x<c.width;x++)if(data[(y*c.width+x)*4+3]>100)alphaBottom=Math.max(alphaBottom,y);
-    return {before,after,stage:box('#drive-stage'),caster:box('#drive-caster'),alphaBottom:alphaBottom/c.height,nitro:box('.nitro-track'),combo:box('#hud-combo'),controls:['#touch-bribe','#touch-nitro'].map(box),documentWidth:document.documentElement.scrollWidth,viewport:innerWidth,selectionStyle:getComputedStyle(document.querySelector('#touch-nitro')).userSelect,callout:getComputedStyle(document.querySelector('#touch-nitro')).webkitTouchCallout,touch:getComputedStyle(document.querySelector('#touch-nitro')).touchAction,coach:!!document.querySelector('#drive-coach')};
-  });
-  assert.deepEqual(measurements.before,measurements.after,`${name}: combo shifted HUD`);
-  assert.equal(measurements.coach,false);
-  assert.ok(Math.abs(measurements.nitro.y-measurements.caster.bottom-2)<1,`${name}: caster gap`);
-  assert.ok(measurements.alphaBottom>.97,`${name}: transparent bottom remained`);
-  assert.ok(measurements.documentWidth<=measurements.viewport,`${name}: page overflows`);
-  assert.ok(measurements.combo.right<=measurements.stage.right,`${name}: combo overflows`);
-  if(mobile){
-    for(const b of measurements.controls){assert.equal(b.width,76);assert.equal(b.height,44);assert.ok(b.bottom<=measurements.stage.bottom);}
-    assert.equal(measurements.selectionStyle,'none');assert.equal(measurements.touch,'none');
-    const x=measurements.controls[1].x+38,y=measurements.controls[1].y+22;
-    await page.mouse.move(x,y);await page.mouse.down();
-    assert.equal(await page.evaluate(()=>DriveGame.state.touchNitro),true);
-    await page.mouse.move(x-90,y-40);await page.mouse.up();
-    assert.equal(await page.evaluate(()=>DriveGame.state.touchNitro),false);
-    const prevented=await page.evaluate(()=>{const el=document.querySelector('#touch-bribe');const result=['contextmenu','selectstart','dragstart'].map(t=>!el.dispatchEvent(new Event(t,{bubbles:true,cancelable:true})));return {result,selection:getSelection().toString()}});
-    assert.ok(prevented.result.every(Boolean));assert.equal(prevented.selection,'');
-    if(name==='landscape')assert.ok(measurements.stage.height<height,'landscape does not fit');
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const { chromium } = require("playwright");
+const target = process.argv[2] || "http://127.0.0.1:8011";
+// This verifier creates test accounts and rentals: run only against an isolated local DB.
+assert.match(target, /^http:\/\/(127\.0\.0\.1|localhost):\d+$/);
+fs.mkdirSync("tmp", { recursive: true });
+(async () => {
+  const browser = await chromium.launch({ headless: true, channel: "chrome" });
+  try {
+    const tag = Date.now();
+    for (const [name, width, height, mobile] of [
+      ["desktop", 1440, 1000, false],
+      ["phone", 390, 844, true],
+      ["small-phone", 320, 568, true],
+      ["landscape", 844, 390, true],
+    ]) {
+      const context = await browser.newContext({
+        baseURL: target,
+        viewport: { width, height },
+        isMobile: mobile,
+        hasTouch: mobile,
+      });
+      const email = `ui-${tag}-${name}@example.com`,
+        password = "Local-test-password-123";
+      assert.equal(
+        (
+          await context.request.post("/api/auth/register", {
+            data: { name: `UI ${name}`, email, password },
+          })
+        ).status(),
+        201,
+      );
+      assert.equal(
+        (
+          await context.request.post("/api/auth/token", {
+            form: { username: email, password },
+          })
+        ).status(),
+        200,
+      );
+      const page = await context.newPage(),
+        errors = [];
+      page.on("pageerror", (e) => errors.push(e.message));
+      await page.goto("/cars");
+      await page.locator('[data-reserve="1"]').click();
+      assert.equal(await page.locator("[data-drive]").count(), 0);
+      await page.locator("#reserve-form button.primary").click();
+      await page.waitForURL(/\/drive\?rental=\d+$/);
+      await page.waitForFunction(
+        () => window.DriveGame?.state.mode === "playing",
+      );
+      await page.waitForFunction(() => DriveGame.state.world.time > 2);
+      const rental = await page.evaluate(() => DriveGame.state.rental.id);
+      const measurements = await page.evaluate(() => {
+        const box = (selector) => {
+          const r = document.querySelector(selector).getBoundingClientRect();
+          return {
+            x: r.x,
+            y: r.y,
+            width: r.width,
+            height: r.height,
+            right: r.right,
+            bottom: r.bottom,
+          };
+        };
+        const g = DriveGame;
+        g.togglePause(true);
+        document.querySelector("#drive-pause").hidden = true;
+        const ids = [
+          ".hud-row-2",
+          ".hud-actions",
+          ".hud-nitro",
+          "#hud-heat",
+          "#hud-hearts",
+        ];
+        g.state.world.player.combo = 1;
+        g.hud(0);
+        const before = ids.map(box);
+        g.state.world.player.combo = 2;
+        g.hud(0);
+        const after = ids.map(box);
+        return {
+          stage: box("#drive-stage"),
+          before,
+          after,
+          viewport: { width: innerWidth, height: innerHeight },
+          scrollWidth: document.documentElement.scrollWidth,
+          scrollHeight: document.documentElement.scrollHeight,
+          selection: getComputedStyle(document.querySelector("#touch-nitro"))
+            .userSelect,
+          controls: ["#touch-bribe", "#touch-nitro"].map(box),
+          visibleText: document.body.innerText,
+        };
+      });
+      assert.ok(measurements.stage.width >= width - 1);
+      assert.ok(measurements.stage.height >= height - 1);
+      assert.ok(
+        measurements.scrollWidth <= width &&
+          measurements.scrollHeight <= height + 1,
+      );
+      assert.deepEqual(
+        measurements.before,
+        measurements.after,
+        "combo moves HUD",
+      );
+      assert.doesNotMatch(
+        measurements.visibleText,
+        /Заезд бесконечный|Вымышленная сатира|Таблица заезда/,
+      );
+      assert.ok(measurements.visibleText.length < 350, "HUD has too much text");
+      if (mobile) {
+        for (const b of measurements.controls) {
+          assert.equal(b.width, 76);
+          assert.equal(b.height, 44);
+          assert.ok(b.bottom <= height);
+        }
+        assert.equal(measurements.selection, "none");
+      }
+      await page.screenshot({ path: `tmp/rental-game-${name}.png` });
+      // Refresh continues the same trip with the same damage and time.
+      await page.evaluate(() => {
+        DriveGame.state.world.player.hearts = 3;
+        DriveGame.togglePause();
+        DriveGame.togglePause(true);
+      });
+      const savedTime = await page.evaluate(() => DriveGame.state.world.time);
+      await page.reload();
+      await page.waitForFunction(
+        () => window.DriveGame?.state.mode === "playing",
+      );
+      assert.equal(
+        await page.evaluate(() => DriveGame.state.rental.id),
+        rental,
+      );
+      assert.equal(
+        await page.evaluate(() => DriveGame.state.world.player.hearts),
+        3,
+      );
+      assert.ok(
+        await page.evaluate((t) => DriveGame.state.world.time >= t, savedTime),
+      );
+      if (name === "desktop") {
+        await page.evaluate(() => {
+          DriveGame.state.world.player.invuln = 100;
+        });
+        await page.waitForFunction(
+          () => DriveGame.state.world.time >= 11,
+          {},
+          { timeout: 20000 },
+        );
+        await page.evaluate(() => {
+          DriveGame.state.world.player.score = 1000;
+        });
+      }
+      await page.locator("#touch-pause").click();
+      await page.locator("#quit").click();
+      await page.waitForFunction(
+        () => DriveGame.state.rental.status === "completed",
+      );
+      assert.equal(await page.locator("#result-stats li").count(), 3);
+      assert.equal(
+        await page.locator("#result-receipt").getAttribute("href"),
+        `/api/rentals/${rental}/receipt`,
+      );
+      const current = await (
+        await context.request.get("/api/rentals/current")
+      ).json();
+      assert.equal(current, null);
+      const stored = await (
+        await context.request.get(`/api/rentals/${rental}`)
+      ).json();
+      assert.equal(stored.status, "completed");
+      assert.equal(stored.game_result.rental_id, rental);
+      assert.ok(stored.total_kopecks > 0);
+      assert.equal(
+        (await (await context.request.get("/api/cars/1")).json()).status,
+        "available",
+      );
+      assert.ok(
+        await page
+          .locator(".overlay-card.result")
+          .evaluate((el) => el.scrollHeight <= el.clientHeight + 1),
+        "result actions require scrolling",
+      );
+      await page.screenshot({ path: `tmp/rental-result-${name}.png` });
+      await page.goto("/trips");
+      await page.waitForSelector(".trip");
+      assert.match(await page.locator("#rentals").innerText(), /очков/);
+      await page.goto(`/drive?rental=${rental}`);
+      await page.waitForFunction(() => DriveGame.state.mode === "result");
+      await page.goto("/leaderboard");
+      await page.waitForSelector(".leader-table");
+      assert.match(
+        await page.locator("#leader-content").innerText(),
+        /UI desktop/,
+      );
+      assert.ok(
+        await page
+          .locator("#leader-content")
+          .evaluate((el) => el.scrollWidth <= innerWidth),
+      );
+      await page.locator('[data-period="all"]').click();
+      await page.waitForFunction(
+        () => !document.querySelector('[aria-busy="true"]'),
+      );
+      await page.screenshot({ path: `tmp/rental-leaderboard-${name}.png` });
+      assert.deepEqual(errors, []);
+      console.log(
+        JSON.stringify({
+          name,
+          rental,
+          stage: measurements.stage,
+          visibleText: measurements.visibleText.length,
+          score: stored.game_result.score,
+          total: stored.total_kopecks,
+          errors,
+        }),
+      );
+      await context.close();
+    }
+  } finally {
+    await browser.close();
   }
-  await page.locator('#drive-stage').screenshot({path:`tmp/ui-after-${name}.png`});
-  await page.evaluate(()=>{const g=DriveGame,p=g.state.world.player;p.encounter={cost:900,timer:1};p.nitroTime=2;p.powers.shield=5;p.powers.magnet=5;p.powers.radar=5;g.state.world.level=24;p.heat=6;p.combo=6;p.chain=122;g.state.recordScore=10;p.score=20000;g.hud(0)});
-  await page.locator('#drive-stage').screenshot({path:`tmp/ui-after-${name}-encounter.png`});
-  const prompt=await page.locator('#bribe-prompt').boundingBox();assert.ok(prompt.height<100,'encounter blocks view');
-  const collisions=await page.evaluate(()=>{const p=document.querySelector('#bribe-prompt').getBoundingClientRect(),b=document.querySelector('#touch-bribe').getBoundingClientRect();const overlapping=b.width>0&&p.bottom>b.top&&p.right>b.left;const combo=document.querySelector('#hud-combo');return {overlapping,comboOverflow:combo.scrollWidth>combo.clientWidth,coach:!!document.querySelector('#drive-coach')}});
-  assert.equal(collisions.overlapping,false,`${name}: late encounter overlaps controls`);assert.equal(collisions.comboOverflow,false);
-  const footer=await page.evaluate(()=>{const powers=document.querySelector('#hud-powers').getBoundingClientRect(),nitro=document.querySelector('.nitro-track').getBoundingClientRect(),level=document.querySelector('#hud-level');return {powerHeight:powers.height,powerBottom:powers.bottom,nitroTop:nitro.top,levelClipped:getComputedStyle(level).overflowY==='hidden'&&level.scrollHeight>level.clientHeight+1}});
-  assert.equal(footer.levelClipped,false,`${name}: pressure value clipped`);
-  assert.ok(footer.powerHeight<=50,`${name}: bonuses cover the road`);
-  assert.ok(footer.powerBottom<footer.nitroTop,`${name}: bonuses overlap nitro`);
-  await page.evaluate(()=>{for(const time of [1.5,9,22,40,66,96,134,200]){DriveGame.state.world.time=time;DriveGame.hud(0)}});
-  assert.deepEqual(errors,[]);
-  console.log(JSON.stringify({name,measurements,errors}));
-  await page.close();
- }
-}finally{await browser.close()}})().catch(e=>{console.error(e);process.exitCode=1});
+})().catch((e) => {
+  console.error(e);
+  process.exitCode = 1;
+});

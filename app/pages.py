@@ -43,7 +43,12 @@ def page(request: Request, db: Session = Depends(get_db)):
             if error.status_code != 401:
                 raise
             return RedirectResponse(
-                "/login?next=" + quote(request.url.path + ("?" + request.url.query if request.url.query else ""), safe=""), status_code=303
+                "/login?next="
+                + quote(
+                    request.url.path + ("?" + request.url.query if request.url.query else ""),
+                    safe="",
+                ),
+                status_code=303,
             )
         if name.startswith("admin") and not user.is_admin:
             return HTMLResponse(

@@ -34,7 +34,7 @@ def leaderboard(
     period: str = Query("week", pattern="^(week|all)$"),
     category: str | None = Query(None, pattern="^(economy|comfort|business)$"),
     limit: int = Query(10, ge=1, le=25),
-    offset: int = Query(0, ge=0, le=500),
+    offset: int = Query(0, ge=0),
     user: User | None = Depends(optional_user),
     db: Session = Depends(get_db),
 ):

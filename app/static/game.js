@@ -11,7 +11,7 @@
   const W = core.WORLD;
   const RECORD_KEY = "drive.nightshift.records.v2";
   const VOLUME_KEY = "drive.nightshift.volume.v1";
-  const CAR_KEY = "drive.selectedCar";
+  const RUN_KEY = "drive.rental.run.v1.";
 
   const state = {
     world: null,
@@ -37,6 +37,9 @@
     dpr: 1,
     view: { scale: 1, ox: 0, oy: 0, w: 0, h: 0 },
     car: null,
+    rental: null,
+    saving: false,
+    lastSaved: 0,
   };
 
   try {
@@ -133,48 +136,82 @@
   }
 
   async function loadCar() {
-    let id = Number(new URLSearchParams(location.search).get("car")) || 0;
-    let stored = null;
-    try {
-      stored = JSON.parse(localStorage.getItem(CAR_KEY));
-    } catch (error) {
-      void error;
-    }
-    let rental = null;
-    try {
-      const response = await fetch("/api/rentals/current", {
-        credentials: "same-origin",
-      });
-      if (response.ok) rental = await response.json();
-    } catch (error) {
-      void error;
-    }
-    if (!id) id = rental?.car_id || Number(stored?.id) || 0;
-    if (!id) return defaultCar();
-    if (!Number.isSafeInteger(id) || id <= 0)
-      throw new Error("Выберите машину в каталоге.");
-    const res = await fetch("/api/cars/" + id, { credentials: "same-origin" });
-    if (!res.ok)
-      throw new Error(
-        "Не удалось загрузить выбранную машину. Обновите страницу или выберите другую.",
-      );
-    const car = await res.json();
+    const raw = new URLSearchParams(location.search).get("rental");
     if (
-      rental?.car_id === car.id &&
-      ["active", "reserved"].includes(rental.status)
-    ) {
-      car.rate_kopecks = rental.rate_kopecks;
-      car.rentalTariff = true;
-    }
+      raw &&
+      (!/^\d+$/.test(raw) ||
+        !Number.isSafeInteger(Number(raw)) ||
+        Number(raw) <= 0)
+    )
+      throw new Error("Поездка не найдена.");
+    const rental = await api(
+      raw ? "/api/rentals/" + raw : "/api/rentals/current",
+    );
+    if (!rental) throw new Error("Выберите автомобиль.");
+    if (!["active", "reserved", "completed"].includes(rental.status))
+      throw new Error("Бронь отменена. Выберите автомобиль.");
+    state.rental = rental;
+    history.replaceState(null, "", "/drive?rental=" + rental.id);
+    const car = await api("/api/cars/" + rental.car_id);
+    car.rate_kopecks = rental.rate_kopecks;
+    car.plate = rental.plate;
+    car.rentalTariff = true;
     return car;
   }
+
+  function persistRun() {
+    if (
+      !state.rental ||
+      !state.world ||
+      state.world.attract ||
+      state.rental.status !== "active"
+    )
+      return;
+    try {
+      localStorage.setItem(
+        RUN_KEY + state.rental.id,
+        JSON.stringify({
+          rental: state.rental.id,
+          started: state.rental.started_at,
+          world: core.snapshotRun(state.world),
+          scroll: state.scroll,
+        }),
+      );
+    } catch (error) {
+      void error;
+    }
+  }
+
+  function restoreRun() {
+    try {
+      const saved = JSON.parse(localStorage.getItem(RUN_KEY + state.rental.id));
+      if (
+        !saved ||
+        saved.rental !== state.rental.id ||
+        saved.started !== state.rental.started_at ||
+        saved.world.car.id !== state.car.id ||
+        saved.world.attract ||
+        saved.world.car.rateKopecks !== state.rental.rate_kopecks ||
+        !Number.isFinite(saved.world.time) ||
+        saved.world.time < 0
+      )
+        return false;
+      state.world = core.resumeRun(saved.world);
+      state.scroll = saved.scroll || 0;
+      return true;
+    } catch (error) {
+      return false;
+    }
+  }
+  window.addEventListener("pagehide", persistRun);
 
   function createWorld(attract) {
     const car = state.car || defaultCar();
     const palette = carPalette(car);
     const world = core.createRun({
       carId: car.id,
-      carName: (car.brand || "") + " " + (car.model || ""),
+      carName:
+        state.rental?.car_name || (car.brand || "") + " " + (car.model || ""),
       plate: car.plate,
       category: car.category,
       rateKopecks: car.rate_kopecks,
@@ -229,9 +266,12 @@
         e.preventDefault();
     }
     if (e.code === "KeyP" || e.code === "Escape") togglePause();
-    if (e.code === "KeyV" && (state.mode === "playing" || state.mode === "paused"))
+    if (
+      e.code === "KeyV" &&
+      (state.mode === "playing" || state.mode === "paused")
+    )
       quitShift();
-    if (e.code === "KeyR" && state.mode !== "intro") restart();
+
     if (e.code === "KeyM") setMuted(!state.muted);
     if (e.code === "Enter" && state.mode === "intro") start();
     if (e.code === "Enter" && state.mode === "result") restart();
@@ -247,8 +287,10 @@
 
   function worldFromPointer(event) {
     const rect = canvas.getBoundingClientRect();
-    const x = (event.clientX - rect.left) / rect.width;
-    return x * W.width;
+    return (
+      ((event.clientX - rect.left) * state.dpr - state.view.ox) /
+      state.view.scale
+    );
   }
   canvas.addEventListener("pointerdown", (e) => {
     if (state.mode !== "playing") return;
@@ -426,6 +468,10 @@
       render(dt);
       hud(dt);
     }
+    if (state.mode === "playing" && now - state.lastSaved > 1000) {
+      state.lastSaved = now;
+      persistRun();
+    }
     requestAnimationFrame(loop);
   }
 
@@ -440,11 +486,15 @@
       canvas.height = ph;
       state.dpr = dpr;
     }
-    const scale = Math.min(pw / W.width, ph / W.height);
+    // Fill tall screens without cutting either edge of the playable road.
+    const scale = Math.min(
+      ph / W.height,
+      pw / (W.roadRight - W.roadLeft + 100),
+    );
     state.view = {
       scale,
       ox: (pw - W.width * scale) / 2,
-      oy: (ph - W.height * scale) / 2,
+      oy: ph - W.height * scale,
       w: pw,
       h: ph,
     };
@@ -478,6 +528,9 @@
     art.background(ctx, {
       w: W.width,
       h: W.height,
+      visibleLeft: -view.ox / view.scale,
+      visibleWidth: view.w / view.scale,
+      visibleTop: -view.oy / view.scale,
       world,
       scroll: state.scroll,
       phase,
@@ -686,8 +739,7 @@
     const btn = $("hud-retire");
     if (!btn) return;
     const net = core.profit(world);
-    const label =
-      (net > 0 ? "Забрать " : "Вернуть в минус ") + money(Math.abs(net));
+    const label = "Вернуть машину";
     if (state.retireLabel !== label) {
       state.retireLabel = label;
       btn.textContent = label;
@@ -780,7 +832,9 @@
     const chipText = powers.join(" · ");
     if ($("hud-powers").dataset.text !== chipText) {
       $("hud-powers").dataset.text = chipText;
-      $("hud-powers").innerHTML = powers.map((power) => "<b>" + power + "</b>").join("");
+      $("hud-powers").innerHTML = powers
+        .map((power) => "<b>" + power + "</b>")
+        .join("");
     }
 
     const prompt = $("bribe-prompt");
@@ -800,7 +854,6 @@
         ? "не хватает денег"
         : "ПРОБЕЛ / Взятка";
     } else if (!prompt.hidden) prompt.hidden = true;
-
   }
 
   /* ---------- состояния ---------- */
@@ -813,43 +866,60 @@
     $("hud").hidden = mode === "intro" || mode === "result";
   }
 
-  function start() {
-    audio.unlock();
-    state.world = createWorld(false);
-    state.scroll = 0;
-    state.shownHearts = -1;
-    state.shownHeat = -1;
-    setMode("playing");
-    const p = state.world.player;
-    ["3", "2", "1"].forEach((digit, i) =>
-      worldPop(state.world, digit, p.x, p.y - 230, "gold", 0.45, i * 0.4),
-    );
-    worldPop(state.world, "ПОЕХАЛИ!", p.x, p.y - 230, "combo", 1.1, 1.25);
-    state.retireLabel = "";
-    state.goPlayed = false;
-    state.lastCheer = -99;
-    const best = records().cars["car" + state.world.car.id];
-    state.recordScore = best ? best.best : 0;
-    state.recordBeaten = false;
-    const recordEl = $("hud-record");
-    recordEl.hidden = !state.recordScore;
-    recordEl.textContent = state.recordScore
-      ? "рекорд " + state.recordScore.toLocaleString("ru-RU")
-      : "";
-    document.querySelector(".hud-score").classList.remove("beat");
-    audio.music(true, true);
-    canvas.focus({ preventScroll: true });
-    $("drive-stage").scrollIntoView({ block: "center", behavior: "instant" });
+  async function start() {
+    if (
+      !state.rental ||
+      state.mode !== "intro" ||
+      state.starting ||
+      state.rental.status === "completed"
+    )
+      return;
+    state.starting = true;
+    $("drive-start").disabled = true;
+    try {
+      if (state.rental.status === "reserved")
+        state.rental = await api("/api/rentals/" + state.rental.id + "/start", {
+          method: "POST",
+        });
+      audio.unlock();
+      const restored = restoreRun();
+      if (!restored) {
+        state.world = createWorld(false);
+        state.scroll = 0;
+      }
+      state.shownHearts = state.shownHeat = -1;
+      state.retireLabel = "";
+      state.goPlayed = false;
+      state.lastCheer = -99;
+      state.recordScore = records().cars["car" + state.world.car.id]?.best || 0;
+      state.recordBeaten = false;
+      $("hud-record").hidden = true;
+      setMode("playing");
+      state.last = performance.now();
+      if (state.world.result) {
+        showResult(state.world.result.reason);
+        return;
+      }
+      audio.music(true, !restored);
+      canvas.focus({ preventScroll: true });
+      persistRun();
+    } catch (error) {
+      $("intro-perk").textContent = error.message;
+      $("drive-start").disabled = false;
+    } finally {
+      state.starting = false;
+    }
   }
 
   function restart() {
-    start();
+    if (state.mode === "result") location.assign("/cars");
   }
 
   function togglePause(force) {
     if (state.mode === "playing" || force === true) {
       if (state.mode !== "playing") return;
       setMode("paused");
+      persistRun();
       audio.engine(false);
       audio.music(false);
       audio.suspend();
@@ -861,38 +931,31 @@
     }
   }
 
-  /* ---------- лидерборд ---------- */
-  const boardCache = Object.create(null);
-  const boardFilters = { period: "week", category: "" };
-  const ESCAPES = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
-  const escapeHtml = (value) =>
-    String(value).replace(/[&<>"']/g, (char) => ESCAPES[char]);
-  /* Русное склонение: 1 игрок, 2 игрока, 5 игроков */
-  function plural(count, one, few, many) {
-    const tail = count % 100;
-    const last = count % 10;
-    if (tail >= 11 && tail <= 14) return many;
-    if (last === 1) return one;
-    if (last >= 2 && last <= 4) return few;
-    return many;
-  }
-
-  async function api(url, options) {
-    const response = await fetch(url, options);
+  async function api(url, options = {}) {
+    const response = await fetch(url, {
+      credentials: "same-origin",
+      signal: AbortSignal.timeout(15000),
+      ...options,
+    });
     const data = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(data.detail || "Сервер не ответил");
+    if (!response.ok)
+      throw new Error(
+        typeof data.detail === "string"
+          ? data.detail
+          : "Не удалось сохранить поездку",
+      );
     return data;
   }
 
   function submitScore(result) {
-    const world = state.world;
-    return api("/api/game/scores", {
+    return api("/api/rentals/" + state.rental.id + "/game/finish", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        car_id: world.car.id || null,
-        car_name: world.car.name,
-        category: world.car.category,
+        rental_id: state.rental.id,
+        car_id: state.car.id,
+        car_name: state.rental.car_name,
+        category: state.car.category,
         score: result.score,
         level: result.level,
         knockdowns: result.knockdowns,
@@ -901,111 +964,9 @@
         profit_kopecks: result.profit,
         duration_seconds: result.time,
         reason: result.reason,
+        best_combo: result.bestCombo,
       }),
     });
-  }
-
-  async function loadBoard() {
-    const key = boardFilters.period + "|" + boardFilters.category;
-    const cached = boardCache[key];
-    if (cached && Date.now() - cached.at < 15000) return cached.data;
-    const query = new URLSearchParams({ period: boardFilters.period });
-    if (boardFilters.category) query.set("category", boardFilters.category);
-    const data = await api("/api/game/leaderboard?" + query.toString());
-    boardCache[key] = { at: Date.now(), data };
-    return data;
-  }
-
-  function boardHeader() {
-    const press = (attr, value, label, active) =>
-      `<button type="button" data-${attr}="${value}" aria-pressed="${active}">${label}</button>`;
-    const period = (name, label) =>
-      press("period", name, label, boardFilters.period === name);
-    const category = (name, label) =>
-      press("category", name, label, boardFilters.category === name);
-    return (
-      '<div class="board-top"><h3>Таблица заезда</h3><div class="board-filters">' +
-      period("week", "Неделя") +
-      period("all", "Всё время") +
-      "</div><div class=\"board-filters\">" +
-      category("", "Все классы") +
-      category("economy", "Эконом") +
-      category("comfort", "Комфорт") +
-      category("business", "Бизнес") +
-      "</div></div>"
-    );
-  }
-
-  function boardMarkup(board) {
-    if (!board.rows.length)
-      return '<p class="board-note">Пока пусто: первый заезд открывает таблицу.</p>';
-    const rows = board.rows
-      .map(
-        (row) =>
-          `<tr class="${row.is_me ? "me" : ""}"><td>${row.rank}</td>` +
-          `<td class="board-name">${escapeHtml(row.name)}</td>` +
-          `<td>${escapeHtml(row.car_name)}</td>` +
-          `<td><strong>${row.score.toLocaleString("ru-RU")}</strong></td>` +
-          `<td>${row.level}</td><td>${row.duration_seconds} с</td></tr>`,
-      )
-      .join("");
-    const about = board.me
-      ? `Ты: ${board.me.rank ? "#" + board.me.rank : "вне таблицы"} · ` +
-        `${board.me.score.toLocaleString("ru-RU")} очков за ${board.me.plays} ` +
-        plural(board.me.plays, "заезд", "заезда", "заездов") +
-        (board.me.best_ever ? `, рекорд ${board.me.best_ever.toLocaleString("ru-RU")}` : "")
-      : "Войди в аккаунт — заезд попадёт в таблицу.";
-    return (
-      '<table class="board-table"><thead><tr><th>#</th><th>Кто</th><th>Машина</th>' +
-      "<th>Очки</th><th>Ур.</th><th>Заезд</th></tr></thead><tbody>" +
-      rows +
-      `</tbody></table><p class="board-note">${about} · всего ` +
-      `${board.totals.players} ${plural(board.totals.players, "игрок", "игрока", "игроков")}</p>`
-    );
-  }
-
-  async function renderBoard(id) {
-    const el = $(id);
-    if (!el) return;
-    el.hidden = false;
-    el.innerHTML = boardHeader() + '<p class="board-note">Загружаем таблицу…</p>';
-    try {
-      const board = await loadBoard();
-      el.innerHTML = boardHeader() + boardMarkup(board);
-      state.lastBoard = board;
-      if (id === "board-result") paintRank(board);
-    } catch (error) {
-      el.innerHTML =
-        boardHeader() +
-        `<p class="board-note">Таблица недоступна: ${escapeHtml(error.message)}</p>`;
-    }
-  }
-
-  function paintRank(board) {
-    const el = $("result-rank");
-    if (!el) return;
-    if (!board) return;
-    if (!board.me || !board.me.rank) {
-      el.textContent =
-        state.boardNote || "Войди в аккаунт, чтобы попадать в таблицу.";
-      return;
-    }
-    const period = boardFilters.period === "all" ? "за всё время" : "за неделю";
-    el.textContent =
-      `Место ${period}: #${board.me.rank} из ${board.totals.players}` +
-      (state.lastSubmission && state.lastSubmission.improved
-        ? " · новый личный рекорд недели"
-        : "");
-  }
-
-  function onBoardClick(event) {
-    const period = event.target.closest("[data-period]");
-    const category = event.target.closest("[data-category]");
-    if (!period && !category) return;
-    if (period) boardFilters.period = period.dataset.period;
-    if (category) boardFilters.category = category.dataset.category;
-    for (const id of ["board-intro", "board-result"])
-      if ($(id) && !$(id).hidden) renderBoard(id);
   }
 
   /* Комментатор в углу: режем зелёный фон ролика на лету.
@@ -1084,136 +1045,89 @@
     requestAnimationFrame(pump);
   }
 
+  function paintOutcome(result) {
+    $("result-title").textContent =
+      result.reason === "wrecked"
+        ? "Машина разбита"
+        : result.reason === "broke"
+          ? "Тариф не окупился"
+          : "Машина возвращена";
+    $("result-score").textContent =
+      result.score.toLocaleString("ru-RU") + " очков";
+    $("result-meta").textContent = result.time + " с · уровень " + result.level;
+    $("result-grade").textContent =
+      result.grade || core.grade(result.score).grade;
+    $("result-stars").innerHTML = "★".repeat(result.stars || 0);
+    $("result-gif").src =
+      "/static/images/" + (result.won ? "smoking.gif" : "fuk.gif");
+    $("result-gif").classList.toggle("win", !!result.won);
+    $("result-stats").innerHTML =
+      `<li><span>Комбо</span><strong>×${result.bestCombo || 1}</strong></li><li><span>Сбито</span><strong>${result.knockdowns}</strong></li><li><span>Аренда</span><strong id="result-cost">…</strong></li>`;
+    setMode("result");
+  }
+
+  function paintCompleted(rental) {
+    state.rental = rental;
+    const r = rental.game_result;
+    if (r) {
+      const grade = core.grade(r.score).grade;
+      paintOutcome({
+        ...r,
+        time: r.duration_seconds,
+        profit: r.profit_kopecks,
+        bestCombo: r.best_combo,
+        won: r.reason === "quit" && r.profit_kopecks > 0,
+        grade,
+        stars: grade === "S" ? 3 : grade === "A" ? 2 : grade === "B" ? 1 : 0,
+      });
+    } else {
+      setMode("result");
+      $("result-title").textContent = "Поездка завершена";
+      $("result-score").textContent = "";
+      $("result-stats").innerHTML =
+        '<li><span>Аренда</span><strong id="result-cost"></strong></li>';
+      $("result-gif").hidden = true;
+    }
+    $("result-cost").textContent = money(rental.total_kopecks);
+    $("result-receipt").href = "/api/rentals/" + rental.id + "/receipt";
+    $("result-receipt").hidden = false;
+    $("result-retry").hidden = true;
+    $("result-rank").textContent = "Поездка сохранена";
+    try {
+      localStorage.removeItem(RUN_KEY + rental.id);
+    } catch (error) {
+      void error;
+    }
+  }
+
   function showResult(reason) {
-    if (state.mode === "result") return;
-    const world = state.world;
-    const result = world.result;
-    if (!result) return;
+    if (state.mode === "result" || !state.world?.result) return;
+    const result = state.world.result;
     audio.engine(false);
     audio.music(false);
-    const isBest = saveRecord(world.car.id, result);
-    const minutes = Math.floor((result.time * core.TIME_SCALE) / 60);
-    $("result-kicker").textContent =
-      reason === "wrecked"
-        ? "БАМПЕР ДОЕЗДИЛСЯ"
-        : reason === "broke"
-          ? "ДОЛГ ПО ДОГОВОРУ"
-          : result.won
-            ? "КАССА ЗАБРАНА"
-            : "МАШИНА В ПАРКЕ";
-    $("result-grade").textContent = result.grade;
-    $("result-title").textContent = result.won
-      ? "Смена в плюсе!"
-      : result.profitable
-        ? "Прибыль есть, машина не доехала"
-        : "Тариф не окупился";
-    $("result-profit").textContent = money(result.profit);
-    $("result-profit").classList.toggle("loss", result.profit < 0);
-    $("result-score").textContent =
-      result.score.toLocaleString("ru-RU") +
-      " очков" +
-      (result.bonus
-        ? " (с кассой +" + result.bonus.toLocaleString("ru-RU") + ")"
-        : "");
-    $("result-meta").textContent =
-      "уровень " +
-      result.level +
-      " из " +
-      core.MAX_LEVEL +
-      " · " +
-      result.time +
-      " с за рулём · " +
-      minutes +
-      " мин по тарифу · " +
-      world.car.name +
-      " " +
-      world.car.plate;
-    $("result-stars").innerHTML = Array.from(
-      { length: 3 },
-      (_, i) => `<span class="${i < result.stars ? "" : "off"}">★</span>`,
-    ).join("");
-    const gif = $("result-gif");
-    gif.src = "/static/images/" + (result.won ? "smoking.gif" : "fuk.gif");
-    gif.alt = result.won ? "Тест-драйв удался" : "Мимо кассы";
-    gif.classList.toggle("win", result.won);
-    const rows = [
-      ["Уровень давления", result.level + " / " + core.MAX_LEVEL],
-      ["Заезд", result.time + " с · " + minutes + " мин по тарифу"],
-      ["Выручка", money(result.revenue)],
-      [
-        "Аренда · " + money(result.rateKopecks) + "/мин",
-        money(result.rentalCost),
-      ],
-      ["Взятки, штрафы и потери", money(result.expenses)],
-      ["Чистая прибыль", money(result.profit)],
-      [
-        "Сбито силуэтов",
-        result.knockdowns + (result.vip ? " (звёзд " + result.vip + ")" : ""),
-      ],
-      ["Лучшее комбо", "×" + result.bestCombo],
-      ["Взяток дано", result.bribes],
-      ["Протоколов", result.failed],
-      ["БПЛА валено", result.drones],
-      ["Таранов патруля", result.rams],
-      ["Облава наезжала", result.raidHits + " раз"],
-      ["Уклонов от дронов", result.dodges],
-      ["Кэш в кармане", money(result.cash)],
-      [
-        "Долг по договору",
-        money(result.rentalDebt) + " / " + money(result.debtLimit),
-      ],
-      ["Максимум км/ч", result.topSpeed],
-      ["Дистанция", result.distance.toFixed(1) + " км"],
-    ];
-    $("result-stats").innerHTML = rows
-      .map((r) => `<li><span>${r[0]}</span><strong>${r[1]}</strong></li>`)
-      .join("");
-    const note = [
-      "Прогресс бесконечный: с каждой минутой город давит сильнее, а оцепление ускоряется. Стартовые 50 ₽ в выручку не входят.",
-    ];
-    if (isBest) note.push("Новый рекорд на этой машине!");
-    const best = records().cars["car" + world.car.id];
-    if (best) note.push("Рекорд: " + best.best.toLocaleString("ru-RU"));
-    if (result.raidHits > 2)
-      note.push(
-        "Совет: как только облава сядет на бампер — включай нитро, оно быстрее оцепления.",
-      );
-    if (result.failed > result.bribes)
-      note.push("Совет: держи кэш — пустой карман означает протокол.");
-    if (result.knockdowns > 0 && result.bribes === 0 && result.failed > 0)
-      note.push("Взятка дешевле ремонта: копи купюры и жми ПРОБЕЛ.");
-    $("result-note").textContent = note.join(" ");
-    if (result.won) audio.sfx("win");
-    else if (result.reason === "wrecked") {
-      audio.sfx("lose");
-      audio.sfx("loseWreck");
-    } else {
-      audio.sfx("lose");
-      audio.sfx("defeat");
-    }
-    setMode("result");
+    saveRecord(state.world.car.id, result);
+    paintOutcome(result);
+    persistRun();
+    audio.sfx(result.won ? "win" : "lose");
     publishScore(result);
   }
 
-  /* Отдаём заезд на сервер и обновляем таблицу; гость видит причину молча. */
   async function publishScore(result) {
-    const rank = $("result-rank");
-    state.lastSubmission = null;
-    state.boardNote = "";
-    if (result.time < 10 || result.score <= 0)
-      state.boardNote = "Заезд короче 10 секунд в таблицу не попадает.";
-    else
-      try {
-        state.lastSubmission = await submitScore(result);
-      } catch (error) {
-        state.boardNote =
-          error.message.indexOf("Сессия") >= 0
-            ? "Войди в аккаунт, чтобы попадать в таблицу."
-            : "В таблицу не записано: " + error.message;
-      }
-    for (const key of Object.keys(boardCache)) delete boardCache[key];
-    if (rank) rank.textContent = state.boardNote || "Считаем место…";
-    renderBoard("board-result");
+    if (state.saving || !state.rental || state.rental.status === "completed")
+      return;
+    state.saving = true;
+    $("result-rank").textContent = "Сохраняем поездку…";
+    $("result-retry").hidden = true;
+    try {
+      const rental = await submitScore(result);
+      // The first completion wins if the same rental was open in two tabs.
+      paintCompleted(rental);
+    } catch (error) {
+      $("result-rank").textContent = "Не сохранено: " + error.message;
+      $("result-retry").hidden = false;
+    } finally {
+      state.saving = false;
+    }
   }
 
   function quitShift() {
@@ -1294,82 +1208,24 @@
     applyVolume();
   }
 
-  function setRecordsPreview() {
-    const car = state.car || defaultCar();
-    const best = records().cars["car" + car.id];
-    const el = $("intro-record");
-    if (best && best.best) {
-      el.hidden = false;
-      el.textContent =
-        "Рекорд на этой машине: " +
-        best.best.toLocaleString("ru-RU") +
-        " очков · заездов: " +
-        best.runs +
-        " · лучшее комбо ×" +
-        best.combo +
-        " · лучшая прибыль " +
-        money(best.bestProfit || 0) +
-        " · побед " +
-        (best.wins || 0);
-    } else el.hidden = true;
-  }
-
   async function boot() {
-    let car;
     try {
-      car = await loadCar();
+      state.car = await loadCar();
     } catch (error) {
-      $("intro-car").textContent = "Машина недоступна";
+      $("intro-car").textContent = "Поездка недоступна";
       $("intro-perk").textContent = error.message;
-      $("drive-start").disabled = true;
+      $("drive-start").hidden = true;
       return;
     }
-    state.car = car;
-    const name =
-      ((car.brand || "") + " " + (car.model || "")).trim() || "Ночной Драйв";
-    $("drive-title").textContent = car.demo
-      ? "Ночная смена"
-      : "Ночная смена · " + name;
-    $("intro-car").textContent = car.demo
-      ? "Машина не выбрана — демо «Драйв Ночной»"
-      : name + " · " + (car.plate || "");
-    $("drive-sub").textContent = car.demo
-      ? "Выберите автомобиль в каталоге, чтобы гонять на нём по ночному проспекту."
-      : "Ваш «" +
-        name +
-        "» (" +
-        (
-          core.CLASSES[car.category] || core.CLASSES.comfort
-        ).label.toLowerCase() +
-        ") выехал на проспект. Заезд бесконечный: едете, пока не разобьётесь.";
+    const car = state.car;
     const profile = core.carProfile(car);
-    $("intro-perk").textContent = profile.perk;
+    $("drive-title").textContent = state.rental.car_name;
+    $("intro-car").textContent = state.rental.car_name;
     $("intro-tariff").textContent =
-      (car.rentalTariff ? "Тариф вашей аренды: " : "Тариф машины: ") +
-      money(car.rate_kopecks) +
-      "/мин · секунда за рулём = " +
-      core.TIME_SCALE +
-      " минут тарифа · долг свыше " +
-      money(car.rate_kopecks * core.DEBT_MINUTES) +
-      " — машина уезжает в парк.";
-    $("intro-specs").textContent =
-      "Скин: " +
-      profile.label +
-      " · " +
-      profile.maxSpeed +
-      " км/ч · руль ×" +
-      profile.steer +
-      " · разгон ×" +
-      profile.acceleration +
-      " · " +
-      profile.hearts +
-      " бамперов";
-    setRecordsPreview();
+      money(car.rate_kopecks) + "/мин · аренда по реальному времени";
     state.world = createWorld(true);
-    const preview = $("car-preview");
     const palette = carPalette(car);
-    preview.setAttribute("aria-label", profile.label);
-    art.playerCar(preview.getContext("2d"), {
+    art.playerCar($("car-preview").getContext("2d"), {
       x: 90,
       y: 115,
       width: profile.width,
@@ -1380,42 +1236,43 @@
       colorLight: palette[2],
       plate: car.plate,
     });
-    setMode("intro");
-    const rulesLoop = () => {
-      audio.unlock();
-      if (state.mode === "intro") audio.loop(true);
-    };
-    window.addEventListener("pointerdown", rulesLoop, { once: true });
-    window.addEventListener("keydown", rulesLoop, { once: true });
-    rulesLoop();
-    if ($("drive-calm").getAttribute("aria-pressed") === "true")
-      state.calm = true;
-    $("drive-start").addEventListener("click", start);
+    $("drive-start").onclick = start;
     $("drive-start").disabled = false;
-    if ($("touch-pause"))
-      $("touch-pause").addEventListener("click", () => togglePause());
-    $("resume").addEventListener("click", () => togglePause());
-    $("quit").addEventListener("click", quitShift);
-    $("again").addEventListener("click", restart);
-    $("hud-retire").addEventListener("click", quitShift);
-    for (const id of ["board-intro", "board-result"])
-      if ($(id)) $(id).addEventListener("click", onBoardClick);
-    renderBoard("board-intro");
-    startCaster();
-    $("drive-sound").addEventListener("click", () => setMuted(!state.muted));
-    $("drive-calm").addEventListener("click", () => {
+    $("touch-pause").onclick = () => togglePause();
+    $("resume").onclick = () => togglePause();
+    $("quit").onclick = $("hud-retire").onclick = quitShift;
+    $("result-retry").onclick = () => publishScore(state.world.result);
+    $("drive-sound").onclick = () => setMuted(!state.muted);
+    $("drive-calm").onclick = () => {
       state.calm = !state.calm;
       $("drive-calm").setAttribute("aria-pressed", String(state.calm));
-      $("drive-calm").textContent = state.calm
-        ? "Без миганий: вкл"
-        : "Без миганий";
-    });
+    };
     document.addEventListener("visibilitychange", () => {
       if (document.hidden && state.mode === "playing") togglePause(true);
     });
+    // Autostart is silent until the first gesture unlocks browser audio.
+    window.addEventListener(
+      "pointerdown",
+      () => {
+        audio.unlock();
+        if (state.mode === "playing") audio.music(true);
+      },
+      { once: true },
+    );
+    window.addEventListener(
+      "keydown",
+      () => {
+        audio.unlock();
+        if (state.mode === "playing") audio.music(true);
+      },
+      { once: true },
+    );
     state.volume = readVolume();
     bindVolume();
+    startCaster();
     requestAnimationFrame(loop);
+    if (state.rental.status === "completed") paintCompleted(state.rental);
+    else if (state.rental.status === "active") await start();
   }
 
   global.DriveGame = {
@@ -1434,8 +1291,6 @@
     createWorld,
     records,
     saveRecord,
-    renderBoard,
-    loadBoard,
     submitScore,
     publishScore,
     startCaster,

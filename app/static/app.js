@@ -33,8 +33,7 @@ for (const link of document.querySelectorAll("nav a"))
 sessionStorage.removeItem("token");
 let user = null,
   accountInitialized = false,
-  registration = false,
-  finishId = null;
+  registration = false;
 const labels = {
   available: "Доступен",
   reserved: "Забронирован",
@@ -86,11 +85,9 @@ async function api(path, options = {}) {
         : "Не удалось связаться с сервером. Проверьте соединение и повторите попытку.",
     );
   }
-  const data = await response
-    .json()
-    .catch(() => ({
-      detail: "Сервис временно недоступен. Попробуйте ещё раз.",
-    }));
+  const data = await response.json().catch(() => ({
+    detail: "Сервис временно недоступен. Попробуйте ещё раз.",
+  }));
   if (response.status === 401 && user) {
     clearAccount();
     message("Сессия завершена. Войдите снова");
@@ -156,9 +153,9 @@ async function refresh() {
       : "Ничего не найдено. Попробуйте изменить фильтры.";
     $("cars").innerHTML =
       cars
-  .map(
-    (c) =>
-      `<article class="card">
+        .map(
+          (c) =>
+            `<article class="card">
         <span class="badge">${labels[c.category]} · ${
           c.fuel < 10 && c.status === "available"
             ? "Ожидает заправки"
@@ -207,7 +204,7 @@ async function refresh() {
             : ""
         }
       </article>`,
-  )
+        )
         .join("") || "<p>В этом классе пока нет автомобилей.</p>";
   }
   if (user && $("rentals")) {
@@ -356,15 +353,6 @@ document.addEventListener("click", async (e) => {
       $("reserve-dialog").showModal();
     }
     if (b.dataset.action) {
-      if (b.dataset.action === "finish") {
-        finishId = b.dataset.id;
-        const trip =
-          activeRental || currentTrips.find((r) => r.id === Number(finishId));
-        if (trip) $("finish-form").elements.address.value = trip.address;
-        $("finish-form").querySelector(".form-status").textContent = "";
-        $("finish-dialog").showModal();
-        return;
-      }
       b.disabled = true;
       await api(`/rentals/${b.dataset.id}/${b.dataset.action}`, {
         method: "POST",
@@ -394,33 +382,6 @@ document.addEventListener("click", async (e) => {
     b.disabled = false;
   }
 });
-if ($("finish-form"))
-  $("finish-form").onsubmit = async (e) => {
-    e.preventDefault();
-    const form = e.target,
-      button = form.querySelector("button"),
-      status = form.querySelector(".form-status");
-    button.disabled = true;
-    status.textContent = "Завершаем поездку…";
-    const data = Object.fromEntries(new FormData(form));
-    data.fuel = Number(data.fuel);
-    try {
-      const result = await api(`/rentals/${finishId}/finish`, {
-        method: "POST",
-        body: JSON.stringify(data),
-      });
-      $("finish-dialog").close();
-      historyPage = 0;
-      await refresh();
-      message("Поездка завершена. Стоимость: " + money(result.total_kopecks));
-    } catch (e) {
-      status.textContent = e.message;
-    } finally {
-      button.disabled = false;
-    }
-  };
-if ($("close-dialog"))
-  $("close-dialog").onclick = () => $("finish-dialog").close();
 if ($("car-form"))
   $("car-form").onsubmit = async (e) => {
     e.preventDefault();
@@ -452,7 +413,8 @@ function renderActive() {
   }
   const reserved = trip.status === "reserved";
   if (!reserved) {
-    $("active-trip").innerHTML = `<div><p class="eyebrow">ПОЕЗДКА</p><h2>${escape(trip.car_name)}</h2><div class="actions"><a class="primary receipt-link" href="${driveHref(trip.id)}">Продолжить поездку</a></div></div>`;
+    $("active-trip").innerHTML =
+      `<div><p class="eyebrow">ПОЕЗДКА</p><h2>${escape(trip.car_name)}</h2><div class="actions"><a class="primary receipt-link" href="${driveHref(trip.id)}">Продолжить поездку</a></div></div>`;
     return;
   }
   const key = trip.id + ":" + trip.status;
@@ -553,16 +515,21 @@ if ($("reserve-form"))
       button = form.querySelector("button"),
       status = form.querySelector(".form-status");
     button.disabled = true;
-    status.textContent = "Бронируем…";
+    status.textContent = "Запускаем…";
     try {
-      const reservation = await api("/rentals", {
-        method: "POST",
-        body: JSON.stringify({
-          car_id: selectedCar.id,
-          expected_rate_kopecks: selectedCar.rate_kopecks,
-        }),
-      });
-      await api(`/rentals/${reservation.id}/start`, { method: "POST" });
+      const reservation =
+        (await api("/rentals/current")) ||
+        (await api("/rentals", {
+          method: "POST",
+          body: JSON.stringify({
+            car_id: selectedCar.id,
+            expected_rate_kopecks: selectedCar.rate_kopecks,
+          }),
+        }));
+      if (reservation.car_id !== selectedCar.id)
+        throw new Error("У вас уже есть поездка. Откройте «Мои поездки».");
+      if (reservation.status === "reserved")
+        await api(`/rentals/${reservation.id}/start`, { method: "POST" });
       $("reserve-dialog").close();
       historyPage = 0;
       location.assign(driveHref(reservation.id));

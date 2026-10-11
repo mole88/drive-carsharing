@@ -1,3 +1,6 @@
+from concurrent.futures import ThreadPoolExecutor
+from datetime import timedelta
+
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
@@ -6,8 +9,7 @@ from sqlalchemy.orm import sessionmaker
 from app.core.db import Base, get_db
 from app.core.security import create_token
 from app.main import app
-from app.models import Car, GameScore, User, utcnow
-from app.services.game import week_of
+from app.models import Car, GameScore, Rental, User, utcnow
 
 tokens = {}
 
@@ -90,30 +92,61 @@ def test_score_requires_login_and_board_is_public(setup):
     assert c.post("/api/game/scores", headers=auth(), json=run(score=-1)).status_code == 422
 
 
-def test_best_of_the_week_wins(setup):
+def begin(setup, user=1, duration=300, car_id=7):
+    c, factory = setup
+    reserved = c.post(
+        "/api/rentals", headers=auth(user), json={"car_id": car_id, "expected_rate_kopecks": 2200}
+    )
+    assert reserved.status_code == 201, reserved.text
+    ident = reserved.json()["id"]
+    assert c.post(f"/api/rentals/{ident}/start", headers=auth(user)).status_code == 200
+    with factory() as db:
+        db.get(Rental, ident).started_at = utcnow() - timedelta(seconds=duration)
+        db.commit()
+    return ident
+
+
+def finish(setup, user=1, **values):
+    ident = begin(setup, user, values.get("duration_seconds", 300))
+    response = setup[0].post(
+        f"/api/rentals/{ident}/game/finish", headers=auth(user), json=run(**values)
+    )
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def test_best_of_week_and_every_game_stays_in_history(setup):
     c, _ = setup
-    first = c.post("/api/game/scores", headers=auth(), json=run(score=500000))
-    assert first.status_code == 201
-    assert first.json()["improved"] is True
-    weaker = c.post("/api/game/scores", headers=auth(), json=run(score=120000, level=9))
-    assert weaker.json()["improved"] is False
-    assert weaker.json()["score"] == 500000
-    better = c.post("/api/game/scores", headers=auth(), json=run(score=800000, level=16))
-    assert better.json()["improved"] is True
-    assert better.json()["score"] == 800000
-    assert better.json()["personal"]["rank"] == 1
+    first = finish(setup, score=500000)
+    weaker = finish(setup, score=120000, level=9)
+    better = finish(setup, score=800000, level=16)
     board = c.get("/api/game/leaderboard", headers=auth()).json()
     assert len(board["rows"]) == 1
-    assert board["totals"] == {"players": 1, "runs": 1}
+    assert board["rows"][0]["score"] == 800000
+    assert board["rows"][0]["rental_id"] == better["id"]
     assert board["rows"][0]["is_me"] is True
-    assert board["me"]["plays"] == 1
+    assert board["totals"] == {"players": 1, "runs": 3}
+    assert board["me"]["plays"] == 3
+    assert board["me"]["rank"] == 1
+    history = c.get("/api/rentals", headers=auth()).json()
+    assert [r["game_result"]["score"] for r in history] == [800000, 120000, 500000]
+    # Reposting an old trip with a forged client score cannot promote it.
+    replay = c.post(
+        "/api/game/scores", headers=auth(), json=run(rental_id=first["id"], score=4000000)
+    )
+    assert replay.status_code == 201
+    assert replay.json()["improved"] is False and replay.json()["score"] == 800000
+    assert weaker["status"] == "completed"
 
 
-def test_board_ranks_players_and_separates_weeks(setup):
+def test_board_ranks_players_and_preserves_legacy_weeks(setup):
     c, factory = setup
-    c.post("/api/game/scores", headers=auth(1), json=run(score=400000))
-    c.post("/api/game/scores", headers=auth(2), json=run(score=900000, level=16))
-    c.post("/api/game/scores", headers=auth(3), json=run(score=650000, category="economy"))
+    finish(setup, user=1, score=400000)
+    finish(setup, user=2, score=900000, level=16)
+    with factory() as db:
+        db.get(Car, 7).category = "economy"
+        db.commit()
+    finish(setup, user=3, score=650000)
     with factory() as db:
         db.add(
             GameScore(
@@ -131,57 +164,140 @@ def test_board_ranks_players_and_separates_weeks(setup):
             )
         )
         db.commit()
-        weeks = {row.week for row in db.query(GameScore).all()}
-        assert week_of() in weeks and "2020-W01" in weeks
-    weekly = c.get("/api/game/leaderboard", headers=auth(1)).json()
+    weekly = c.get("/api/game/leaderboard", headers=auth()).json()
     assert [row["score"] for row in weekly["rows"]] == [900000, 650000, 400000]
-    assert [row["rank"] for row in weekly["rows"]] == [1, 2, 3]
     assert weekly["me"]["rank"] == 3
-    alltime = c.get("/api/game/leaderboard?period=all", headers=auth(1)).json()
+    alltime = c.get("/api/game/leaderboard?period=all", headers=auth()).json()
     assert [row["score"] for row in alltime["rows"]] == [3000000, 900000, 650000]
-    assert alltime["totals"]["players"] == 3
-    assert alltime["totals"]["runs"] == 4
-    assert alltime["me"]["rank"] == 1
+    assert alltime["totals"] == {"players": 3, "runs": 4}
     assert alltime["me"]["best_ever"] == 3000000
-    economy = c.get("/api/game/leaderboard?category=economy", headers=auth(1)).json()
+    economy = c.get("/api/game/leaderboard?category=economy", headers=auth()).json()
     assert [row["name"] for row in economy["rows"]] == ["Игрок 3"]
+    page = c.get("/api/game/leaderboard?limit=1&offset=1").json()
+    assert page["rows"][0]["rank"] == 2 and page["rows"][0]["score"] == 650000
+    assert c.get("/leaderboard").status_code == 200
 
 
-def test_implausible_runs_are_rejected(setup):
-    c, _ = setup
-    too_fast = c.post("/api/game/scores", headers=auth(), json=run(score=5000000))
-    assert too_fast.status_code == 422
-    assert "очков" in too_fast.json()["detail"]
-    wrong_level = c.post(
-        "/api/game/scores", headers=auth(), json=run(duration_seconds=60, level=30, score=100000)
+def test_implausible_game_cannot_end_or_bill_rental(setup):
+    c, factory = setup
+    ident = begin(setup, duration=300)
+    for payload, message in [
+        (run(score=5000000), "очков"),
+        (run(duration_seconds=60, level=30, score=100000), "Уровень"),
+        (run(duration_seconds=60, level=4, score=100000, knockdowns=3000), "сбитых"),
+        (run(duration_seconds=360), "Длительность"),
+    ]:
+        rejected = c.post(f"/api/rentals/{ident}/game/finish", headers=auth(), json=payload)
+        assert rejected.status_code == 422 and message in rejected.json()["detail"]
+    with factory() as db:
+        r = db.get(Rental, ident)
+        assert r.status == "active" and r.total_kopecks == 0 and r.game_result is None
+        assert db.get(Car, 7).status == "rented"
+    assert c.get("/api/game/leaderboard").json()["rows"] == []
+
+
+def test_owned_rental_snapshot_locked_billing_and_receipt(setup):
+    c, factory = setup
+    ident = begin(setup, duration=61)
+    with factory() as db:
+        car = db.get(Car, 7)
+        car.brand, car.model, car.rate_kopecks = "Changed", "Car", 9999
+        db.commit()
+    assert c.get(f"/api/rentals/{ident}", headers=auth(2)).status_code == 404
+    assert (
+        c.post(f"/api/rentals/{ident}/game/finish", headers=auth(2), json=run()).status_code == 404
     )
-    assert wrong_level.status_code == 422
-    assert "Уровень" in wrong_level.json()["detail"]
-    too_many = c.post(
-        "/api/game/scores",
+    result = c.post(
+        f"/api/rentals/{ident}/game/finish",
         headers=auth(),
-        json=run(duration_seconds=60, level=4, score=100000, knockdowns=3000),
-    )
-    assert too_many.status_code == 422
-    assert "сбитых" in too_many.json()["detail"]
-    assert c.get("/api/game/leaderboard", headers=auth()).json()["rows"] == []
+        json=run(
+            car_id=999,
+            car_name="fake",
+            category="economy",
+            duration_seconds=60,
+            level=3,
+            score=100000,
+            knockdowns=10,
+            best_combo=4,
+        ),
+    ).json()
+    assert result["total_kopecks"] == 4400
+    assert result["game_result"]["car_name"] == "BMW 320i"
+    assert result["game_result"]["category"] == "business"
+    assert result["game_result"]["car_id"] == 7
+    assert result["game_result"]["best_combo"] == 4
+    assert c.get("/api/cars/7").json()["status"] == "available"
+    receipt = c.get(f"/api/rentals/{ident}/receipt", headers=auth())
+    assert receipt.status_code == 200 and "100000" in receipt.text
+    assert "BMW 320i" in receipt.text
 
 
-def test_car_snapshot_overrides_the_client_label(setup):
+def test_zero_second_trip_finishes_without_qualifying_for_board(setup):
     c, _ = setup
-    response = c.post("/api/game/scores", headers=auth(), json=run(car_id=7, car_name="чепуха"))
-    assert response.status_code == 201
-    row = c.get("/api/game/leaderboard", headers=auth()).json()["rows"][0]
-    assert row["car_name"] == "BMW 320i"
-    assert row["category"] == "business"
-    missing = c.post("/api/game/scores", headers=auth(2), json=run(car_id=999))
-    assert missing.status_code == 404
+    result = finish(setup, duration_seconds=0, level=1, score=0, knockdowns=0)
+    assert result["status"] == "completed" and result["total_kopecks"] == 2200
+    assert result["game_result"]["duration_seconds"] == 0
+    assert c.get("/api/game/leaderboard").json()["rows"] == []
+    assert c.get("/api/rentals/current", headers=auth()).json() is None
+
+
+def test_concurrent_completion_bills_once_and_keeps_first_outcome(setup):
+    c, factory = setup
+    ident = begin(setup)
+
+    def send(score):
+        return c.post(f"/api/rentals/{ident}/game/finish", headers=auth(), json=run(score=score))
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(send, [300000, 500000]))
+    assert all(r.status_code == 200 for r in results)
+    assert (
+        results[0].json() == results[1].json()
+        or results[0].json()["game_result"] == results[1].json()["game_result"]
+    )
+    replay = send(1000000).json()
+    assert replay["game_result"] == results[0].json()["game_result"]
+    with factory() as db:
+        assert db.query(GameScore).count() == 1
+        assert db.query(Rental).count() == 1
+        assert db.get(Rental, ident).total_kopecks == replay["total_kopecks"]
+
+
+def test_rank_write_failure_rolls_back_completion(setup, monkeypatch):
+    c, factory = setup
+    ident = begin(setup)
+
+    def fail(*args):
+        raise RuntimeError("test transaction failure")
+
+    monkeypatch.setattr("app.services.game.record", fail)
+    failed = c.post(f"/api/rentals/{ident}/game/finish", headers=auth(), json=run())
+    assert failed.status_code == 500
+    with factory() as db:
+        assert db.get(Rental, ident).status == "active"
+        assert db.get(Rental, ident).game_result is None
+        assert db.get(Car, 7).status == "rented"
+        assert db.query(GameScore).count() == 0
+
+
+def test_only_active_owned_game_results_are_accepted(setup):
+    c, _ = setup
+    assert c.post("/api/game/scores", headers=auth(), json=run()).status_code == 422
+    ident = begin(setup)
+    assert c.post("/api/game/scores", headers=auth(), json=run(rental_id=ident)).status_code == 409
+    assert c.post("/api/game/scores", headers=auth(2), json=run(rental_id=ident)).status_code == 404
+    assert c.post("/api/rentals/999/game/finish", headers=auth(), json=run()).status_code == 404
+    assert c.get(f"/drive?rental={ident}", headers=auth()).status_code == 200
+    redirect = c.get(f"/drive?rental={ident}", follow_redirects=False)
+    assert redirect.status_code == 303
+    assert redirect.headers["location"] == f"/login?next=%2Fdrive%3Frental%3D{ident}"
 
 
 def test_submissions_are_throttled(setup):
     c, _ = setup
+    result = finish(setup, user=2)
     for index in range(40):
-        response = c.post("/api/game/scores", headers=auth(2), json=run(score=index + 1))
+        response = c.post("/api/game/scores", headers=auth(2), json=run(rental_id=result["id"]))
         assert response.status_code == 201, index
-    blocked = c.post("/api/game/scores", headers=auth(2), json=run(score=99))
+    blocked = c.post("/api/game/scores", headers=auth(2), json=run(rental_id=result["id"]))
     assert blocked.status_code == 429

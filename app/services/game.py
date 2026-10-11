@@ -117,6 +117,24 @@ def best_per_user(*conditions):
     )
 
 
+def plays(db, *, week=None, category=None, user_id=None):
+    conditions = [
+        Rental.status == "completed",
+        Rental.game_result["score"].as_integer().is_not(None),
+    ]
+    if week:
+        conditions.append(Rental.game_result["week"].as_string() == week)
+    if category:
+        conditions.append(Rental.game_result["category"].as_string() == category)
+    if user_id is not None:
+        conditions.append(Rental.user_id == user_id)
+    count = db.scalar(select(func.count(Rental.id)).where(*conditions)) or 0
+    legacy = filters(week, category) + [GameScore.rental_id.is_(None)]
+    if user_id is not None:
+        legacy.append(GameScore.user_id == user_id)
+    return count + (db.scalar(select(func.count(GameScore.id)).where(*legacy)) or 0)
+
+
 def board(db: Session, *, week=None, category=None, limit=20, offset=0, viewer_id=None):
     conditions = filters(week, category)
     ranked = best_per_user(*conditions)
@@ -129,11 +147,7 @@ def board(db: Session, *, week=None, category=None, limit=20, offset=0, viewer_i
         .offset(offset)
         .limit(limit)
     ).all()
-    players, runs = db.execute(
-        select(func.count(func.distinct(GameScore.user_id)), func.count(GameScore.id)).where(
-            *conditions
-        )
-    ).one()
+    players = db.scalar(select(func.count(func.distinct(GameScore.user_id))).where(*conditions))
     entries = []
     for index, (score, name) in enumerate(rows):
         entry = {field: getattr(score, field) for field in ("user_id", *RESULT_FIELDS)}
@@ -141,7 +155,7 @@ def board(db: Session, *, week=None, category=None, limit=20, offset=0, viewer_i
         entry["rank"] = offset + index + 1
         entry["is_me"] = viewer_id is not None and score.user_id == viewer_id
         entries.append(entry)
-    return entries, {"players": players, "runs": runs}
+    return entries, {"players": players, "runs": plays(db, week=week, category=category)}
 
 
 def personal(db: Session, user: User, *, week=None, category=None):
@@ -150,9 +164,7 @@ def personal(db: Session, user: User, *, week=None, category=None):
         select(func.max(GameScore.score)).where(GameScore.user_id == user.id, *conditions)
     )
     alltime = db.scalar(select(func.max(GameScore.score)).where(GameScore.user_id == user.id))
-    plays = db.scalar(
-        select(func.count(GameScore.id)).where(GameScore.user_id == user.id, *conditions)
-    )
+    count = plays(db, week=week, category=category, user_id=user.id)
     rank = None
     if mine:
         better = db.scalar(
@@ -161,4 +173,4 @@ def personal(db: Session, user: User, *, week=None, category=None):
             )
         )
         rank = better + 1
-    return {"rank": rank, "score": mine or 0, "best_ever": alltime or 0, "plays": plays or 0}
+    return {"rank": rank, "score": mine or 0, "best_ever": alltime or 0, "plays": count}

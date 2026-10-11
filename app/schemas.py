@@ -97,6 +97,7 @@ class ScoreInput(BaseModel):
 
 class GameFinishInput(ScoreInput):
     duration_seconds: int = Field(ge=0, le=7200)
+    best_combo: int = Field(default=1, ge=1, le=10)
 
 
 class ScoreOut(BaseModel):

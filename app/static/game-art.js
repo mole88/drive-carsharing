@@ -1095,6 +1095,9 @@
 
   function background(ctx, o) {
     const { w, h, world, scroll, phase } = o;
+    const visibleLeft = o.visibleLeft ?? 0;
+    const visibleWidth = o.visibleWidth ?? w;
+    const visibleTop = Math.min(0, o.visibleTop ?? 0);
     const roadTop = o.roadTop || h * 0.3;
     const pal = PALETTE[phase.tint] || PALETTE.night;
     const sky = ctx.createLinearGradient(0, 0, 0, roadTop);
@@ -1102,7 +1105,7 @@
     sky.addColorStop(0.6, pal.sky[1]);
     sky.addColorStop(1, pal.sky[2]);
     ctx.fillStyle = sky;
-    ctx.fillRect(0, 0, w, roadTop);
+    ctx.fillRect(visibleLeft, visibleTop, visibleWidth, roadTop - visibleTop);
 
     ctx.globalAlpha = 0.7;
     ctx.fillStyle = "#fff8e1";
@@ -1123,16 +1126,32 @@
     ctx.fill();
     ctx.globalAlpha = 1;
 
-    skyline(ctx, w, h, pal, 12345, scroll, roadTop);
+    ctx.save();
+    ctx.translate(visibleLeft, 0);
+    skyline(ctx, visibleWidth, h, pal, 12345, scroll, roadTop);
+    ctx.restore();
 
     ctx.fillStyle = "#2a3630";
-    ctx.fillRect(0, roadTop, w, h - roadTop);
+    ctx.fillRect(visibleLeft, roadTop, visibleWidth, h - roadTop);
 
     const left = o.roadLeft,
       right = o.roadRight;
     ctx.fillStyle = pal.curb;
-    ctx.fillRect(0, roadTop, left - 14, h);
-    ctx.fillRect(right + 14, roadTop, w - right, h);
+    ctx.fillRect(visibleLeft, roadTop, left - 14 - visibleLeft, h);
+    ctx.fillRect(right + 14, roadTop, visibleLeft + visibleWidth - right, h);
+    // Continue the city across wide displays while retaining square sprite pixels.
+    for (let x = Math.floor(visibleLeft / 180) * 180; x < visibleLeft + visibleWidth; x += 180) {
+      if (x + 130 > left - 90 && x < right + 90) continue;
+      for (let y = roadTop - 240 + (scroll * .35) % 260; y < h; y += 260) {
+        ctx.fillStyle = "#142821";
+        ctx.fillRect(x + 12, y, 130, 220);
+        ctx.fillStyle = pal.neon[Math.abs(Math.round(x / 180)) % pal.neon.length];
+        ctx.globalAlpha = .35;
+        for (let wy = y + 20; wy < y + 200; wy += 34)
+          for (let wx = x + 26; wx < x + 130; wx += 28) ctx.fillRect(wx, wy, 10, 15);
+        ctx.globalAlpha = 1;
+      }
+    }
     ctx.strokeStyle = "#0e1a17";
     ctx.lineWidth = 5;
     ctx.beginPath();

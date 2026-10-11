@@ -148,12 +148,14 @@ def finish_game(db, user_id, rental_id, data):
             car_name=rental.car_name_snapshot or f"{car.brand} {car.model}",
             category=car.category,
             week=game.week_of(now),
+            best_combo=data.best_combo,
         )
         changed = db.execute(
             update(Rental)
             .where(Rental.id == rental.id, Rental.status == "active")
             .values(
-                status="completed", finished_at=now,
+                status="completed",
+                finished_at=now,
                 finish_address=rental.pickup_address or car.address,
                 total_kopecks=max(1, ceil(elapsed / 60)) * rental.rate_kopecks,
                 game_result=result,
