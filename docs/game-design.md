@@ -129,6 +129,21 @@ Solaris — голубой кузов с жёлтыми деталями; Octavi
 завершения должны составлять 25–84 %, и каждая модель должна иметь хотя бы одну
 победу. Источником случайности ядра служит seed, поэтому прогоны повторяемы.
 
+## Звук
+
+Фоном играет `app/static/audio/testdrive.mp3`: стартует с нулевой громкости и
+разгоняется ~2.6 с, при паузе и на итогах плавно уходит в ноль, на время
+«контакта» с патрулём приглушается до 0.16, чтобы prompt читался громче эффектов.
+Кнопка «Звук» и `M` глушат и трек, и синтез.
+
+Эффекты синтезируются WebAudio. Присланные файлы подключаются одной строкой в
+`SAMPLES` внутри `game-audio.js`: положить `app/static/audio/<слот>.mp3` и добавить
+`knock: "audio/knock.mp3"`. Slots: `knock`, `knock_vip`, `combo_5`, `cash`,
+`bribe_ok`, `bribe_fail`, `protocol`, `siren`, `encounter`, `cop_ram`, `drone_lock`,
+`drone_dive`, `drone_kill`, `drone_miss`, `damage`, `graze`, `cone`, `oil_spin`,
+`nitro_start`, `nitro_end`, `power`, `phase_change`, `record_beat`, `countdown`,
+`go`, `win_shift`, `lose_wreck`, `ui_click`. Чего нет — играет синтез.
+
 ## Структура кода
 
 | Файл | Зона ответственности |

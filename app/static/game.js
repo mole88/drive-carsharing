@@ -29,6 +29,7 @@
     coach: [],
     coachIndex: 0,
     coachTimer: 0,
+    ducked: false,
     shownHearts: -1,
     shownHeat: -1,
     record: null,
@@ -710,6 +711,10 @@
     }
 
     const prompt = $("bribe-prompt");
+    if (!!p.encounter !== state.ducked) {
+      state.ducked = !!p.encounter;
+      audio.duck(state.ducked);
+    }
     if (p.encounter) {
       prompt.hidden = false;
       $("bribe-cost").textContent = money(p.encounter.cost);
@@ -799,7 +804,7 @@
       ? "рекорд " + state.recordScore.toLocaleString("ru-RU")
       : "";
     document.querySelector(".hud-score").classList.remove("beat");
-    audio.music(true);
+    audio.music(true, true);
     audio.sfx("start");
     canvas.focus({ preventScroll: true });
     $("drive-stage").scrollIntoView({ block: "center", behavior: "instant" });

@@ -1,6 +1,15 @@
-/* Звук мини-игры: всё синтезируется WebAudio, файлов нет. */
+/* Звук мини-игры: эффекты синтезируются WebAudio, фоном играет трек из /static/audio. */
 (function (global) {
   "use strict";
+
+  const TRACK_SRC = "/static/audio/testdrive.mp3";
+  const TRACK_LEVEL = 0.42;
+  const TRACK_FADE_IN = 2600;
+  const TRACK_FADE_OUT = 600;
+  const TRACK_DUCK = 0.16;
+  /* Присланные эффекты кладутся в app/static/audio/<слот>.mp3 и объявляются здесь,
+     например: knock: "audio/knock.mp3". Пока файла нет — играет синтез. */
+  const SAMPLES = {};
 
   let ctx = null;
   let master = null;
@@ -13,6 +22,10 @@
   let stepIndex = 0;
   let nextNote = 0;
   let musicOn = false;
+  let track = null;
+  let trackRamp = null;
+  let trackBroken = false;
+  const samples = {};
 
   const BPM = 152;
   const BASS = [0, 0, 7, 0, 3, 0, 7, 5];
@@ -206,6 +219,52 @@
     }
   }
 
+  function startSynth() {
+    if (!ctx) return;
+    stepIndex = 0;
+    nextNote = ctx.currentTime + 0.05;
+    if (!scheduler) scheduler = setInterval(scheduleMusic, 40);
+  }
+
+  function stopSynth() {
+    if (scheduler) {
+      clearInterval(scheduler);
+      scheduler = null;
+    }
+  }
+
+  function ensureTrack() {
+    if (trackBroken || typeof global.Audio !== "function") return null;
+    if (!track) {
+      track = new global.Audio(TRACK_SRC);
+      track.loop = true;
+      track.preload = "auto";
+      track.volume = 0;
+      track.addEventListener("error", () => {
+        trackBroken = true;
+      });
+    }
+    return track;
+  }
+
+  function rampTrack(to, ms) {
+    if (!track) return;
+    if (trackRamp) clearInterval(trackRamp);
+    const from = track.volume;
+    const steps = Math.max(1, Math.round(ms / 50));
+    let done = 0;
+    trackRamp = setInterval(() => {
+      done += 1;
+      const t = Math.min(1, done / steps);
+      track.volume = Math.max(0, Math.min(1, from + (to - from) * (1 - Math.pow(1 - t, 2))));
+      if (t >= 1) {
+        clearInterval(trackRamp);
+        trackRamp = null;
+        if (to <= 0.001 && !musicOn) track.pause();
+      }
+    }, 50);
+  }
+
   const api = {
     available() {
       return !!(global.AudioContext || global.webkitAudioContext);
@@ -218,6 +277,10 @@
     setMuted(value) {
       muted = !!value;
       if (master) master.gain.value = muted ? 0 : 0.9;
+      if (track && !trackBroken) {
+        rampTrack(muted ? 0 : musicOn ? TRACK_LEVEL : 0, 250);
+        if (!muted && musicOn && track.paused) track.play().catch(() => {});
+      }
       return muted;
     },
     isMuted() {
@@ -257,24 +320,68 @@
     },
     sfx(name) {
       if (!ctx) api.unlock();
-      if (!ctx || muted || !SFX[name]) return;
+      if (muted) return;
+      const file = SAMPLES[name];
+      if (file && typeof global.Audio === "function") {
+        if (!samples[name]) samples[name] = new global.Audio(file);
+        const el = samples[name];
+        try {
+          el.currentTime = 0;
+          el.play().catch(() => {});
+        } catch (error) {
+          void error;
+        }
+        return;
+      }
+      if (!ctx || !SFX[name]) return;
       SFX[name]();
     },
-    music(on) {
+    music(on, restart) {
       if (!ctx) api.unlock();
-      if (!ctx) return;
       musicOn = !!on;
-      if (musicOn) {
-        stepIndex = 0;
-        nextNote = ctx.currentTime + 0.05;
-        if (!scheduler) scheduler = setInterval(scheduleMusic, 40);
-      } else if (scheduler) {
-        clearInterval(scheduler);
-        scheduler = null;
+      const el = ensureTrack();
+      if (el && !trackBroken) {
+        if (musicOn) {
+          stopSynth();
+          if (restart) {
+            try {
+              el.currentTime = 0;
+            } catch (error) {
+              void error;
+            }
+          }
+          const played = el.play();
+          if (played && played.catch)
+            played.catch(() => {
+              trackBroken = true;
+              startSynth();
+            });
+          rampTrack(muted ? 0 : TRACK_LEVEL, restart ? TRACK_FADE_IN : 900);
+        } else {
+          rampTrack(0, TRACK_FADE_OUT);
+        }
+        return;
       }
+      if (!ctx) return;
+      if (musicOn) startSynth();
+      else stopSynth();
+    },
+    duck(on) {
+      if (!track || trackBroken) return;
+      rampTrack(on ? TRACK_DUCK : muted ? 0 : TRACK_LEVEL, on ? 220 : 500);
     },
     info() {
-      return { state: ctx ? ctx.state : "uninitialised", muted, music: musicOn, available: api.available() };
+      return {
+        state: ctx ? ctx.state : "uninitialised",
+        muted,
+        music: musicOn,
+        available: api.available(),
+        track: trackBroken ? "fallback-synth" : track ? "testdrive.mp3" : "idle",
+        trackVolume: track ? Number(track.volume.toFixed(2)) : 0,
+        trackPlaying: track ? !track.paused && !track.ended : false,
+        trackTime: track ? Number(track.currentTime.toFixed(1)) : 0,
+        trackReady: track ? track.readyState : -1,
+      };
     },
     suspend() {
       if (ctx && ctx.state === "running") ctx.suspend();

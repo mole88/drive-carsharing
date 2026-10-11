@@ -254,14 +254,21 @@
     roundRect(ctx, -w * 0.44, h * 0.33, w * 0.88, h * 0.1, 8);
     ctx.fill();
     ctx.fillStyle = "#f6f8ef";
-    roundRect(ctx, -w * 0.28, h * 0.25, w * 0.56, 24, 6);
+    const plateBox = { x: -w * 0.28, y: h * 0.25, w: w * 0.56, h: 24 };
+    roundRect(ctx, plateBox.x, plateBox.y, plateBox.w, plateBox.h, 6);
     ctx.fill();
     ctx.stroke();
     ctx.fillStyle = INK;
-    ctx.font = "700 12px system-ui, sans-serif";
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
-    ctx.fillText((o.plate || "ДРАЙВ").slice(0, 9), 0, h * 0.25 + 13);
+    const plateText = String(o.plate || "ДРАЙВ").slice(0, 10);
+    let plateSize = 12;
+    ctx.font = `700 ${plateSize}px system-ui, sans-serif`;
+    const fitTo = plateBox.w - 8;
+    const measured = ctx.measureText(plateText).width;
+    if (measured > fitTo) plateSize = Math.max(5, Math.floor((plateSize * fitTo) / measured));
+    ctx.font = `700 ${plateSize}px system-ui, sans-serif`;
+    ctx.fillText(plateText, 0, plateBox.y + plateBox.h / 2);
 
     if (o.shield) {
       ctx.strokeStyle = "#7fe3d8";
