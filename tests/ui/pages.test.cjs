@@ -38,6 +38,7 @@ async function screen(name, role = "user", query = "") {
     title: name,
     content: read(`app/templates/${name}.html`),
     subnav: "",
+    styles: "",
     scripts: "",
     asset_version: "test-version",
   }))

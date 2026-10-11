@@ -22,6 +22,7 @@ asset_version = sha256(
 PAGES = {
     "/": ("home", "Каршеринг в Санкт-Петербурге", False),
     "/cars": ("cars", "Автомобили", False),
+    "/drive": ("drive", "Ночная смена · мини-игра", False),
     "/login": ("login", "Вход и регистрация", False),
     "/how-it-works": ("how-it-works", "Как это работает", False),
     "/trips": ("trips", "Мои поездки", True),
@@ -58,11 +59,22 @@ def page(request: Request, db: Session = Depends(get_db)):
         if name in {"support", "admin", "admin-fleet"}
         else ""
     )
+    if name == "drive":
+        scripts = "".join(
+            f'<script src="/static/{file}?v={asset_version}" defer></script>'
+            for file in ("game-core.js", "game-art.js", "game-audio.js", "game.js")
+        )
+    styles = (
+        f'<link rel="stylesheet" href="/static/game.css?v={asset_version}" />'
+        if name == "drive"
+        else ""
+    )
     html = (templates / "base.html").read_text(encoding="utf-8")
     values = {
         "title": title,
         "page": name,
         "subnav": subnav,
+        "styles": styles,
         "content": (templates / f"{name}.html").read_text(encoding="utf-8"),
         "scripts": scripts,
         "asset_version": asset_version,

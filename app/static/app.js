@@ -112,6 +112,17 @@ let refreshSequence = 0,
   selectedCar = null,
   activeReceivedAt = 0,
   activeMarkupKey = "";
+function rememberCar(car) {
+  if (!car) return;
+  try {
+    localStorage.setItem("drive.selectedCar", JSON.stringify(car));
+  } catch (error) {
+    void error;
+  }
+}
+function driveHref(carId) {
+  return "/drive?car=" + carId;
+}
 async function refresh() {
   const sequence = ++refreshSequence;
   if ($("cars")) {
@@ -178,6 +189,12 @@ async function refresh() {
         >
           ${user ? "Забронировать" : "Войти и забронировать"}
         </button>
+
+        ${
+          screen === "admin-fleet"
+            ? ""
+            : `<button class="drive-cta" data-drive="${c.id}">Ночная смена · мини-игра</button>`
+        }
 
         ${
           screen === "admin-fleet" &&
@@ -325,6 +342,11 @@ document.addEventListener("click", async (e) => {
   const b = e.target.closest("button");
   if (!b) return;
   try {
+    if (b.dataset.drive) {
+      rememberCar(currentCars.find((c) => c.id === Number(b.dataset.drive)));
+      location.assign(driveHref(b.dataset.drive));
+      return;
+    }
     if (b.dataset.reserve) {
       if (!user) {
         goLogin();
@@ -338,6 +360,8 @@ document.addEventListener("click", async (e) => {
         selectedCar.plate + " · " + selectedCar.address;
       $("reserve-rate").textContent =
         money(selectedCar.rate_kopecks) + " / мин";
+      rememberCar(selectedCar);
+      if ($("reserve-drive")) $("reserve-drive").href = driveHref(selectedCar.id);
       $("reserve-form").querySelector(".form-status").textContent = "";
       $("reserve-dialog").showModal();
     }
@@ -437,7 +461,7 @@ function renderActive() {
   if (activeMarkupKey !== key) {
     activeMarkupKey = key;
     $("active-trip").innerHTML =
-      `<div><p class="eyebrow">${reserved ? "ВАША БРОНЬ" : "ПОЕЗДКА ИДЁТ"}</p><h2>${escape(trip.car_name)}</h2><p>${escape(trip.plate)} · ${escape(trip.address)}</p><p id="live-price"></p><div class="actions">${reserved ? `<button class="primary" data-action="start" data-id="${trip.id}">Начать поездку</button><button data-action="cancel" data-id="${trip.id}">Отменить бронь</button>` : `<button class="primary" data-action="finish" data-id="${trip.id}">Завершить</button>`}</div></div><div class="timer"><strong id="live-time"></strong><span>${reserved ? "осталось до отмены" : "в пути"}</span></div>`;
+      `<div><p class="eyebrow">${reserved ? "ВАША БРОНЬ" : "ПОЕЗДКА ИДЁТ"}</p><h2>${escape(trip.car_name)}</h2><p>${escape(trip.plate)} · ${escape(trip.address)}</p><p id="live-price"></p><div class="actions">${reserved ? `<button class="primary" data-action="start" data-id="${trip.id}">Начать поездку</button><button data-action="cancel" data-id="${trip.id}">Отменить бронь</button>` : `<button class="primary" data-action="finish" data-id="${trip.id}">Завершить</button>`}<a class="drive-cta" href="${driveHref(trip.car_id)}">Ночная смена · мини-игра</a></div></div><div class="timer"><strong id="live-time"></strong><span>${reserved ? "осталось до отмены" : "в пути"}</span></div>`;
   }
   const now =
     Date.parse(trip.server_now) + (performance.now() - activeReceivedAt);
