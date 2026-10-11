@@ -1,4 +1,4 @@
-/* Мультяшная векторная отрисовка на canvas: без внешних картинок, всё рисуется кодом. */
+/* Canvas-графика: окружение рисуется кодом, персонажи — прозрачными PNG-спрайтами. */
 (function (global) {
   "use strict";
 
@@ -30,6 +30,85 @@
       curb: "#2a2150",
     },
   };
+
+  // Пути относительно этого скрипта работают и при размещении сайта в подпапке.
+  const artScript = global.document && global.document.currentScript;
+  const artScriptUrl =
+    artScript && artScript.src ? new URL(artScript.src) : null;
+  const spriteBase = artScriptUrl
+    ? new URL("images/sprites/nightlife/", artScriptUrl).href
+    : "/static/images/sprites/nightlife/";
+  function loadTargetImage(file) {
+    if (typeof global.Image !== "function") return null;
+    const image = new global.Image();
+    image.decoding = "async";
+    image.src = spriteBase + file + (artScriptUrl ? artScriptUrl.search : "");
+    return image;
+  }
+  // Центр головы и опора стоп в каждой ячейке: кадры не прыгают при смене ряда.
+  const walkAnchors = [
+    [
+      [0.5821, 0.9963],
+      [0.4981, 0.9963],
+      [0.4552, 0.9963],
+      [0.4527, 0.9963],
+      [0.5506, 0.9816],
+      [0.4999, 0.9797],
+      [0.4636, 0.9797],
+      [0.4379, 0.9797],
+    ],
+    [
+      [0.506, 0.9926],
+      [0.5607, 0.9908],
+      [0.4513, 0.9926],
+      [0.4845, 0.9834],
+      [0.4433, 0.9705],
+      [0.5356, 0.9779],
+      [0.4786, 0.9834],
+      [0.4876, 0.9503],
+    ],
+    [
+      [0.526, 0.9963],
+      [0.5088, 0.9982],
+      [0.5145, 0.9945],
+      [0.5172, 0.9926],
+      [0.5043, 0.9797],
+      [0.5196, 0.989],
+      [0.527, 0.989],
+      [0.5189, 0.9853],
+    ],
+    [
+      [0.4515, 0.9982],
+      [0.4219, 0.9963],
+      [0.4523, 0.9982],
+      [0.489, 0.9982],
+      [0.4276, 0.9742],
+      [0.4829, 0.9742],
+      [0.5031, 0.989],
+      [0.5076, 0.9687],
+    ],
+  ];
+  const targetSprites = [
+    "blonde-pink",
+    "brunette-leopard",
+    "redhead-turquoise",
+    "vip-gold",
+  ].map((name, index) => {
+    const sprite = {
+      idle: null,
+      walk: loadTargetImage(name + "-walk.webp"),
+      columns: 4,
+      rows: 2,
+      frames: 8,
+      anchors: walkAnchors[index],
+    };
+    // Тяжёлый исходный PNG нужен только при ошибке игрового атласа.
+    if (sprite.walk)
+      sprite.walk.onerror = () => {
+        sprite.idle = loadTargetImage(name + ".png");
+      };
+    return sprite;
+  });
 
   const ctxLine = (ctx, w) => {
     ctx.lineWidth = w;
@@ -266,7 +345,8 @@
     ctx.font = `700 ${plateSize}px system-ui, sans-serif`;
     const fitTo = plateBox.w - 8;
     const measured = ctx.measureText(plateText).width;
-    if (measured > fitTo) plateSize = Math.max(5, Math.floor((plateSize * fitTo) / measured));
+    if (measured > fitTo)
+      plateSize = Math.max(5, Math.floor((plateSize * fitTo) / measured));
     ctx.font = `700 ${plateSize}px system-ui, sans-serif`;
     ctx.fillText(plateText, 0, plateBox.y + plateBox.h / 2);
 
@@ -282,8 +362,108 @@
     ctx.restore();
   }
 
-  /* Проститутка: мультяшный силуэт, вид спереди, без жестокости и без натурализма. */
+  /* Гламур нулевых: полуреалистичные карикатуры, без натурализма столкновений. */
   function target(ctx, t, o) {
+    // Уже существующий hue выбирает образ, не меняя случайность и баланс ядра.
+    const variant = t.vip
+      ? 3
+      : Math.floor(((((t.hue || 0) % 360) + 360) % 360) / 120);
+    const sprite = targetSprites[variant];
+    const atlasReady =
+      sprite.walk && sprite.walk.complete && sprite.walk.naturalWidth;
+    const image = atlasReady ? sprite.walk : sprite.idle;
+    if (!image || !image.complete || !image.naturalWidth) {
+      proceduralTarget(ctx, t, o);
+      return;
+    }
+
+    const launched = t.state === "launched";
+    const stride = t.stride || 0;
+    // Ядро уже ускоряет stride вместе со скоростью персонажа; полёт не шагает.
+    const phase = ((stride % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2);
+    const frame =
+      !launched && t.speed !== 0
+        ? Math.floor((phase / (Math.PI * 2)) * sprite.frames)
+        : 0;
+    const sourceWidth = image.naturalWidth / (atlasReady ? sprite.columns : 1);
+    const sourceHeight = image.naturalHeight / (atlasReady ? sprite.rows : 1);
+    const direction = t.dir < 0 ? -1 : 1;
+    const scale = (o.scale || 1) * (t.scale || 1);
+    const spriteHeight = 132;
+    const spriteWidth = (spriteHeight * sourceWidth) / sourceHeight;
+    const anchor = atlasReady ? sprite.anchors[frame] : [0.5, 1];
+    ctx.save();
+    ctx.translate(t.x, t.y);
+    ctx.rotate(t.spin || 0);
+    ctx.globalAlpha = t.alpha === undefined ? 1 : t.alpha;
+    ctx.scale(scale, scale);
+    if (!launched) shadow(ctx, 0, 52, 26, 8, 0.25);
+
+    ctx.save();
+    if (!launched) {
+      if (!atlasReady) {
+        ctx.translate(0, -Math.abs(Math.sin(stride)) * 1.8);
+        ctx.rotate(Math.sin(stride) * 0.025);
+      }
+      if (t.alarmed > 0) ctx.rotate(-direction * 0.08);
+    }
+    ctx.scale(direction, 1);
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
+    ctx.drawImage(
+      image,
+      atlasReady ? (frame % sprite.columns) * sourceWidth : 0,
+      atlasReady ? Math.floor(frame / sprite.columns) * sourceHeight : 0,
+      sourceWidth,
+      sourceHeight,
+      -spriteWidth * anchor[0],
+      56 - spriteHeight * anchor[1],
+      spriteWidth,
+      spriteHeight,
+    );
+    ctx.restore();
+
+    if (t.vip) {
+      ctx.fillStyle = "#ffe36b";
+      ctxLine(ctx, 3);
+      star(ctx, 0, -87, 10, 5);
+      ctx.fill();
+      ctx.stroke();
+    }
+    if (t.case) {
+      ctx.fillStyle = "#e8dcc4";
+      ctxLine(ctx, 3);
+      roundRect(ctx, -37, 0, 16, 12, 3);
+      ctx.fill();
+      ctx.stroke();
+    }
+    if (launched) {
+      ctx.fillStyle = "#fff1a1";
+      for (const side of [-1, 1]) {
+        star(
+          ctx,
+          side * 23,
+          -75 + Math.sin((o.time || 0) * 12 + side) * 5,
+          5,
+          5,
+        );
+        ctx.fill();
+      }
+    }
+    if (t.alarmed > 0 && t.state === "walking") {
+      ctx.font = "700 26px system-ui, sans-serif";
+      ctx.fillStyle = "#fff6d8";
+      ctx.strokeStyle = INK;
+      ctx.lineWidth = 5;
+      ctx.textAlign = "center";
+      ctx.strokeText("?!", 0, t.vip ? -105 : -90);
+      ctx.fillText("?!", 0, t.vip ? -105 : -90);
+    }
+    ctx.restore();
+  }
+
+  /* Запасная отрисовка до загрузки PNG или при ошибке загрузки. */
+  function proceduralTarget(ctx, t, o) {
     const s = (o.scale || 1) * (t.scale || 1);
     ctx.save();
     ctx.translate(t.x, t.y);
@@ -532,6 +712,63 @@
       ctx.arc(0, 0, w * 0.7, 0, Math.PI * 2);
       ctx.fill();
       ctx.globalAlpha = 1;
+    }
+    ctx.restore();
+  }
+
+  /* Оцепление: шеренга патрульных через всю дорогу со шлагбаумной лентой. */
+  function raid(ctx, o) {
+    const left = o.left,
+      right = o.right,
+      span = right - left,
+      time = o.time || 0;
+    const cars = Math.max(3, Math.round(span / 150));
+    const step = span / cars;
+    ctx.save();
+    ctx.translate(0, o.y);
+    ctx.scale(o.scale || 1, o.scale || 1);
+
+    const glow = ctx.createLinearGradient(0, -170, 0, 60);
+    glow.addColorStop(0, "rgba(255,77,110,0)");
+    glow.addColorStop(
+      1,
+      o.tight ? "rgba(255,77,110,.55)" : "rgba(255,77,110,.24)",
+    );
+    ctx.fillStyle = glow;
+    ctx.fillRect(left - 12, -170, span + 24, 230);
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(left - 12, -30, span + 24, 30);
+    ctx.clip();
+    ctx.fillStyle = "#12241f";
+    ctx.fillRect(left - 12, -30, span + 24, 30);
+    ctx.fillStyle = "#ffd85e";
+    for (let x = left - 70; x < right + 50; x += 58) {
+      ctx.beginPath();
+      ctx.moveTo(x, 0);
+      ctx.lineTo(x + 30, 0);
+      ctx.lineTo(x + 46, -30);
+      ctx.lineTo(x + 16, -30);
+      ctx.closePath();
+      ctx.fill();
+    }
+    ctx.restore();
+
+    const wave = Math.sin(time * 5) * 5;
+    for (let i = 0; i < cars; i++) {
+      policeCar(
+        ctx,
+        {
+          x: left + step * (i + 0.5),
+          y: 40 + (i % 2 ? wave : -wave),
+          width: step - 12,
+          height: (step - 12) * 1.4,
+          spin: i % 2 ? 0.05 : -0.05,
+          alpha: 1,
+        },
+        { scale: 1, time, beam: true },
+      );
     }
     ctx.restore();
   }
@@ -1105,6 +1342,7 @@
     playerCar,
     target,
     policeCar,
+    raid,
     drone,
     droneTarget,
     pickup,

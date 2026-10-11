@@ -1,30 +1,41 @@
+/* Экономия мини-игры: ускоренная аренда, долг по договору и условие победы. */
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
-const fs = require("node:fs");
-const vm = require("node:vm");
-const context = vm.createContext({ console });
-vm.runInContext(fs.readFileSync("app/static/game-core.js", "utf8"), context);
-const core = context.GameCore;
+const sim = require("./game-sim.cjs");
 
-test("rent uses the selected tariff and charges each started minute exactly once", () => {
+const core = sim.core;
+const { TIME_SCALE, DEBT_MINUTES, RULES } = core;
+
+test("rent charges every started rental minute on the accelerated clock", () => {
   for (const rate of [900, 950, 1400, 2200, 1733]) {
     const w = core.createRun({ seed: 1, rateKopecks: rate });
     core.step(w, 0.01, {});
     assert.equal(w.stats.rentalCost, rate);
     assert.equal(w.player.cash, core.STARTING_CASH - rate);
-    w.time = 60 - 0.01;
+    w.time = 60 / TIME_SCALE - 0.01;
     core.step(w, 0.01, {});
-    assert.equal(w.stats.rentalCost, rate);
+    assert.equal(w.stats.rentalCost, rate, "минута аренды ещё не началась");
+    w.time = 60 / TIME_SCALE;
     core.step(w, 0.01, {});
     assert.equal(w.stats.rentalCost, rate * 2);
-    assert.equal(w.player.cash, core.STARTING_CASH - rate * 2);
     assert.equal(core.rentalCost(rate, 120), rate * 2);
     assert.equal(core.rentalCost(rate, 120.001), rate * 3);
   }
 });
 
-test("rent debt is repaid by earnings instead of disappearing when cash reaches zero", () => {
-  const w = core.createRun({ seed: 2, rateKopecks: 2200 });
+test("a few minutes behind the wheel cost like a real carshare trip", () => {
+  const rate = 1400;
+  const w = core.createRun({ seed: 2, rateKopecks: rate });
+  w.time = 300;
+  core.finish(w, "quit");
+  assert.equal(w.result.rentMinutes, 40, "5 минут игры = 40 минут тарифа");
+  assert.equal(w.result.rentalCost, core.rentalCost(rate, 300 * TIME_SCALE));
+  assert.ok(w.result.rentalCost >= rate * 40, "аренда за смену должна быть ощутимой");
+  assert.equal(w.debtLimit, rate * DEBT_MINUTES);
+});
+
+test("rent debt is repaid by earnings instead of disappearing when cash hits zero", () => {
+  const w = core.createRun({ seed: 3, rateKopecks: 2200 });
   w.player.cash = 100;
   core.step(w, 0.01, {});
   assert.equal(w.player.cash, 0);
@@ -32,70 +43,151 @@ test("rent debt is repaid by earnings instead of disappearing when cash reaches 
   core.collect(w, { kind: "cash", value: 2000, x: 0, y: 0 });
   assert.equal(w.player.rentalDebt, 0);
   assert.equal(w.player.cash, w.stats.cashEarned - 2100);
-  assert.equal(core.profit(w), w.stats.cashEarned - 2200);
+  assert.equal(core.profit(w), w.stats.cashEarned - w.stats.cashSpent - w.stats.rentalCost);
 });
 
-test("starting cash cannot buy victory; profitable early quits also do not win", () => {
-  const idle = core.createRun({ seed: 3, rateKopecks: 900 });
+test("only a paid-off retirement wins; wrecking pays nothing", () => {
+  const idle = core.createRun({ seed: 4, rateKopecks: 900 });
   idle.time = 150;
-  core.finish(idle, "shift_end");
-  assert.equal(idle.result.profit, -2700);
-  assert.equal(idle.result.won, false);
-  assert.equal(idle.result.cash, core.STARTING_CASH - 2700);
-  const earned = core.createRun({ seed: 4, rateKopecks: 900 });
+  core.finish(idle, "quit");
+  const rent = core.rentalCost(900, 150 * TIME_SCALE);
+  assert.equal(idle.result.rentalCost, rent);
+  assert.equal(idle.result.profit, -rent);
+  assert.equal(idle.result.won, false, "уход в минус не победа");
+  assert.equal(idle.result.bonus, 0, "должник не получает кассу");
+
+  const earned = core.createRun({ seed: 5, rateKopecks: 900 });
   core.collect(earned, { kind: "cash", value: 10000, x: 0, y: 0 });
   earned.time = 150;
-  core.finish(earned, "shift_end");
+  core.finish(earned, "quit");
+  assert.equal(earned.result.profit, earned.stats.cashEarned - rent);
   assert.equal(earned.result.won, true);
-  assert.equal(earned.result.profit, earned.result.revenue - 2700);
-  const cashBefore = earned.player.cash,
-    scoreBefore = earned.player.score;
-  core.step(earned, 0.05, {});
-  core.finish(earned, "shift_end");
-  assert.equal(earned.player.cash, cashBefore);
-  assert.equal(earned.player.score, scoreBefore);
-  const early = core.createRun({ seed: 4, rateKopecks: 900 });
-  core.collect(early, { kind: "cash", value: 10000, x: 0, y: 0 });
-  early.time = 1;
-  core.finish(early, "quit");
-  assert.ok(early.result.profit > 0);
-  assert.equal(early.result.won, false);
+  assert.ok(earned.result.bonus > 0);
+  assert.equal(earned.result.grade, core.grade(earned.result.score).grade);
+
+  const wrecked = core.createRun({ seed: 6, rateKopecks: 900 });
+  core.collect(wrecked, { kind: "cash", value: 10000, x: 0, y: 0 });
+  wrecked.time = 150;
+  wrecked.status = "wrecked";
+  core.finish(wrecked, "wrecked");
+  assert.equal(wrecked.result.reason, "wrecked");
+  assert.equal(wrecked.result.won, false);
+  assert.equal(wrecked.result.bonus, 0);
+});
+
+test("debt ceiling ends the run: the car goes back to the depot", () => {
+  const w = core.createRun({ seed: 7, rateKopecks: 2200 });
+  w.player.cash = 0;
+  w.player.hearts = 999;
+  w.player.maxHearts = 999;
+  let steps = 0;
+  while (w.status === "running" && steps < 60 * 300) {
+    core.step(w, 1 / 60, {});
+    /* Пешком наличность не поднимать: проверяем именно потолок долга */
+    w.pickups.length = 0;
+    w.stats.cashEarned = 0;
+    steps += 1;
+  }
+  assert.equal(w.status, "broke", "долг обязан остановить заезд");
+  assert.equal(w.result.reason, "broke");
+  assert.ok(w.player.rentalDebt >= w.debtLimit);
+  assert.equal(w.result.won, false);
+});
+
+test("the retirement bonus adds a quarter of the score, not the whole wallet", () => {
+  const w = core.createRun({ seed: 9, rateKopecks: 900 });
+  core.collect(w, { kind: "cash", value: 200000, x: 0, y: 0 });
+  w.time = 70;
+  w.player.score = 320000;
+  core.finish(w, "quit");
+  const r = w.result;
+  assert.equal(r.won, true);
+  assert.ok(r.bonus <= r.score * 0.35, "бонус раздувает очки: " + r.bonus);
+  assert.ok(
+    r.score <= r.time * 9000,
+    "возврат не проходит серверную проверку правдоподобия: " + r.score + "/" + r.time,
+  );
+  assert.ok(r.score >= 320000 + r.bonus - 1);
 });
 
 test("four models have distinct skins and physical handling, including two economy cars", () => {
-  const profiles = Object.entries(core.CARS).map(([carName]) =>
+  const profiles = Object.keys(core.CARS).map((carName) =>
     core.carProfile({ carName }),
   );
   assert.equal(new Set(profiles.map((p) => p.skin)).size, 4);
   assert.equal(new Set(profiles.map((p) => p.maxSpeed)).size, 4);
   assert.equal(new Set(profiles.map((p) => p.steer)).size, 4);
-  const rio = core.createRun({
-    carName: "Kia Rio",
-    category: "economy",
-    seed: 5,
-  });
+  const rio = core.createRun({ carName: "Kia Rio", category: "economy", seed: 5 });
   const solaris = core.createRun({
     carName: "Hyundai Solaris",
     category: "economy",
     seed: 5,
   });
-  const bmw = core.createRun({
-    carName: "BMW 320i",
-    category: "business",
-    seed: 5,
-  });
+  const bmw = core.createRun({ carName: "BMW 320i", category: "business", seed: 5 });
   core.step(rio, 0.05, { fast: true });
   core.step(solaris, 0.05, { fast: true });
   core.step(bmw, 0.05, { fast: true });
   assert.ok(
-    bmw.player.speed > solaris.player.speed &&
-      solaris.player.speed > rio.player.speed,
+    bmw.player.speed > solaris.player.speed && solaris.player.speed > rio.player.speed,
   );
   assert.notEqual(rio.player.width, solaris.player.width);
   assert.notEqual(rio.player.hearts, solaris.player.hearts);
-  const other = core.carProfile({
-    carName: "Another car",
-    category: "economy",
-  });
-  assert.equal(other.skin, "economy");
+  assert.equal(core.carProfile({ carName: "Another car", category: "economy" }).skin, "economy");
+});
+
+test("car class changes the money curve, not only the label", () => {
+  const gains = ["economy", "comfort", "business"].map(
+    (category) => core.CLASSES[category].cashGain,
+  );
+  assert.ok(gains[0] < gains[1] && gains[1] < gains[2], "чек должен расти по классу");
+  for (const category of ["economy", "comfort", "business"]) {
+    const cls = core.CLASSES[category];
+    assert.ok(cls.hearts >= 4 && cls.hearts <= 8, category + " hearts");
+    assert.ok(cls.perk.length > 20, category + " needs a readable perk line");
+  }
+  const business = core.CLASSES.business;
+  const economy = core.CLASSES.economy;
+  assert.ok(business.mass > economy.mass, "бизнес тяжелее");
+  assert.ok(business.steer < economy.steer, "бизнес рулится медленнее");
+  assert.ok(
+    core.bribeCost({ player: { heat: 3 }, cls: business, stats: { bribes: 0 } }) <
+      core.bribeCost({ player: { heat: 3 }, cls: economy, stats: { bribes: 0 } }),
+    "скидка на взятки обязана работать",
+  );
+});
+
+test("bribes cost money and cool the wanted level, silence costs bumpers", () => {
+  const w = core.createRun({ category: "comfort", seed: 4 });
+  const p = w.player;
+  p.cash = 5000;
+  p.invuln = 0;
+  w.time = RULES.grace + 1;
+  core.spawnCop(w, false);
+  const cop = w.cops[0];
+  cop.x = p.x + 60;
+  cop.y = p.y;
+  core.step(w, sim.DT, {});
+  assert.ok(p.encounter, "контакт с патрулем обязан открыть диалог");
+  const heatBefore = p.heat;
+  p.cash = 999999;
+  core.step(w, sim.DT, { bribe: true });
+  assert.equal(p.encounter, null, "взятка закрывает диалог");
+  assert.ok(p.cash < 999999, "взятка стоит денег");
+  assert.equal(w.stats.bribes, 1);
+  assert.ok(p.heat < heatBefore + 1, "взятка не поднимает тепло");
+
+  const stubborn = core.createRun({ category: "comfort", seed: 8 });
+  stubborn.player.hearts = 5;
+  stubborn.player.invuln = 0;
+  stubborn.time = RULES.grace + 1;
+  core.spawnCop(stubborn, false);
+  const blocker = stubborn.cops[0];
+  blocker.x = stubborn.player.x + 60;
+  blocker.y = stubborn.player.y;
+  core.step(stubborn, sim.DT, {});
+  stubborn.player.cash = 0;
+  for (let i = 0; i < Math.ceil(RULES.bribeWindow / sim.DT) + 5; i++)
+    core.step(stubborn, sim.DT, {});
+  assert.equal(stubborn.stats.failedBribes, 1, "молчание пишется в протокол");
+  assert.ok(stubborn.player.hearts <= 4, "протокол бьёт по бамперу");
 });

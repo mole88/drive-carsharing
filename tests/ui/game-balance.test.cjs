@@ -1,391 +1,277 @@
+/* Кривая давления: сложность растёт сама, забег конечен, мастерство заметно на дистанции. */
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
-const vm = require("node:vm");
+const path = require("node:path");
+const sim = require("./game-sim.cjs");
 
-const context = vm.createContext({ console });
-vm.runInContext(fs.readFileSync("app/static/game-core.js", "utf8"), context, {
-  filename: "game-core.js",
-});
-const core = context.GameCore;
+const core = sim.core;
 const { WORLD, RULES, CLASSES, GRADES } = core;
-const DT = 1 / 60;
+const { LEVEL_SECONDS, MAX_LEVEL, TIME_SCALE } = core;
+const DT = sim.DT;
+const SEEDS = [3, 9, 15, 21];
+const COMFORT = { category: "comfort", carName: "Skoda Octavia", rateKopecks: 1400 };
 
-function bot(world, careful) {
-  const p = world.player;
-  let target = null;
-  let bestScore = -1e9;
-  for (const t of world.targets) {
-    if (t.state !== "walking") continue;
-    const dy = p.y - t.y;
-    if (dy < -30 || dy > 640) continue;
-    const blocked =
-      careful &&
-      world.props.some(
-        (s) =>
-          s.damage > 0 &&
-          Math.abs(s.x - t.x) < 80 &&
-          s.y < p.y &&
-          s.y > t.y - 220,
-      );
-    if (blocked) continue;
-    const score =
-      (1 - Math.abs(t.x - p.x) / 420) * 100 +
-      (t.vip ? 70 : 0) -
-      Math.abs(dy) * 0.07;
-    if (score > bestScore) {
-      bestScore = score;
-      target = t;
-    }
-  }
-  let steer = target ? Math.max(-1, Math.min(1, (target.x - p.x) / 120)) : 0;
-  const drone = world.drones.find(
-    (d) =>
-      (d.state === "lock" || d.state === "dive") &&
-      Math.abs(d.lockX - p.x) < 95,
+function series(policy, seeds, options) {
+  return seeds.map(
+    (seed) => sim.play(policy, seed, Object.assign({}, COMFORT, options || {})).result,
   );
-  if (drone) steer = drone.lockX > p.x ? -1 : 1;
-  const prop = careful
-    ? world.props.find(
-        (s) =>
-          s.damage > 0 &&
-          Math.abs(s.x - p.x) < 70 &&
-          s.y < p.y &&
-          s.y > p.y - 280,
-      )
-    : null;
-  if (prop) steer = prop.x > p.x ? -1 : 1;
-  return {
-    steer,
-    throttle: careful ? 0.55 : 0.9,
-    fast: false,
-    slow: false,
-    left: false,
-    right: false,
-    bribe: !!(p.encounter && p.cash >= p.encounter.cost),
-    nitro: p.nitro >= RULES.nitroCost && !p.encounter && p.heat > 3,
-  };
 }
 
-function play(category, seed, difficulty, careful, options = {}) {
-  const world = core.createRun({
-    category,
-    seed,
-    difficulty,
-    carId: seed,
-    ...options,
-  });
-  const sample = { targets: [], heat: [], speed: [] };
-  const seen = { encounter: 0, damage: 0, droneSpawn: 0, knock: 0 };
-  while (world.status === "running") {
-    core.step(world, DT, bot(world, careful));
-    for (const e of world.events) if (e.type in seen) seen[e.type] += 1;
-    world.events.length = 0;
-    sample.targets.push(
-      world.targets.filter((t) => t.state === "walking").length,
-    );
-    sample.heat.push(world.player.heat);
-    sample.speed.push(world.player.speed);
-    if (world.time > 400) break;
-  }
-  const mean = (list) => list.reduce((a, b) => a + b, 0) / list.length;
-  return {
-    world,
-    seen,
-    avg: {
-      targets: mean(sample.targets),
-      heat: mean(sample.heat),
-      speed: mean(sample.speed),
-    },
-  };
+function median(values) {
+  const sorted = values.slice().sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
 }
 
-test("core exposes the design tables the shell relies on", () => {
+function atLevel(w, level) {
+  w.time = (level - 1) * LEVEL_SECONDS;
+  w.level = level;
+  /* Прыжок во времени не должен моментально загонять в долг по договору */
+  w.player.cash = 1e9;
+  return w;
+}
+
+test("ядро отдаёт экрану таблицы давления и таблицу оценок", () => {
   for (const key of [
     "WORLD",
     "CLASSES",
     "RULES",
-    "GRADES",
+    "PHASES",
+    "LEVEL_SECONDS",
+    "MAX_LEVEL",
+    "TIME_SCALE",
+    "levelAt",
+    "pressureAt",
+    "damageScaleAt",
+    "blockedAt",
+    "raidKmhAt",
+    "heartCapAt",
     "createRun",
     "step",
     "finish",
   ])
-    assert.ok(core[key], "GameCore." + key + " is missing");
-  for (const category of ["economy", "comfort", "business"]) {
-    const cls = CLASSES[category];
-    assert.ok(cls.hearts >= 4 && cls.hearts <= 8, category + " hearts");
-    assert.ok(cls.maxSpeed > 140 && cls.maxSpeed < 210, category + " maxSpeed");
-    assert.ok(cls.perk.length > 20, category + " needs a readable perk line");
-  }
+    assert.ok(core[key] !== undefined, "GameCore." + key + " отсутствует");
   assert.equal(GRADES[0].grade, "S");
-  assert.ok(GRADES[0].score > GRADES[1].score);
+  for (let i = 1; i < GRADES.length; i++)
+    assert.ok(GRADES[i - 1].score > GRADES[i].score, "пороги оценок должны убывать");
+  assert.equal(GRADES[GRADES.length - 1].score, 0, "худшая оценка обязана быть доступной");
 });
 
-test("a full shift completes with a sane, non-degenerate result", () => {
-  const { world, seen } = play("comfort", 17, "normal", true);
-  const result = world.result;
-  assert.notEqual(world.status, "running", "run never terminated");
-  assert.ok(result, "no result object");
-  for (const [key, value] of Object.entries(result))
-    if (typeof value === "number")
-      assert.ok(Number.isFinite(value), "result." + key + " is not a number");
-  assert.ok(
-    result.knockdowns >= 25,
-    "too few targets to satisfy the fantasy: " + result.knockdowns,
-  );
-  assert.ok(result.knockdowns <= 200, "target flood: " + result.knockdowns);
-  assert.ok(result.bestCombo >= 2, "combo chain never formed");
-  assert.ok(
-    result.bestCombo <= RULES.comboCap,
-    "combo multiplier escaped the cap",
-  );
-  assert.ok(seen.encounter >= 1, "patrols never engaged the player");
-  assert.ok(
-    result.bribes + result.failed >= 1,
-    "bribe economy never triggered",
-  );
-  assert.ok(result.time >= 45, "shift ended far too early: " + result.time);
-  assert.ok(result.score > 1000);
-  assert.equal(core.grade(result.score).grade, result.grade);
+test("давление монотонно растёт и режим выбора больше нет", () => {
+  assert.equal(core.createRun({ seed: 1 }).level, 1);
+  let prev = null;
+  for (const level of [1, 4, 8, 12, 16, 20, 24, MAX_LEVEL]) {
+    const now = {
+      pressure: core.pressureAt(level),
+      damage: core.damageScaleAt(level),
+      blocked: core.blockedAt(level),
+      raid: core.raidKmhAt(level),
+      cap: core.propCapAt(level),
+    };
+    if (prev)
+      for (const key of Object.keys(now))
+        assert.ok(now[key] >= prev[key], key + " не должен падать с уровнем");
+    prev = now;
+  }
+  assert.equal(core.levelAt(0), 1);
+  assert.equal(core.levelAt(LEVEL_SECONDS), 2);
+  assert.equal(core.levelAt((MAX_LEVEL - 1) * LEVEL_SECONDS), MAX_LEVEL);
+  assert.equal(core.levelAt(1e9), MAX_LEVEL, "уровень обязан быть ограничен");
 });
 
-test("difficulty and car class change the outcome, not just the label", () => {
-  const relaxed = play("comfort", 23, "relaxed", true).world.result;
-  const hardcore = play("comfort", 23, "hardcore", true).world.result;
-  assert.ok(
-    hardcore.bribes + hardcore.failed >= 1 &&
-      relaxed.cash >= 0 &&
-      hardcore.cash >= 0,
-    "cash must stay non-negative and the bribe economy must engage",
-  );
-  assert.notDeepEqual(
-    [relaxed.score, relaxed.knockdowns],
-    [hardcore.score, hardcore.knockdowns],
-    "difficulty had no effect",
-  );
-  const economy = play("economy", 23, "normal", true).world;
-  const business = play("business", 23, "normal", true).world;
-  assert.ok(
-    economy.cls.steer > business.cls.steer,
-    "economy must steer sharper",
-  );
-  assert.ok(business.cls.mass > economy.cls.mass, "business must be heavier");
-  assert.ok(
-    core.bribeCost({
-      player: { heat: 3 },
-      cls: business.cls,
-      stats: { bribes: 0 },
-    }) <
-      core.bribeCost({
-        player: { heat: 3 },
-        cls: economy.cls,
-        stats: { bribes: 0 },
-      }),
-    "business bribe discount must be cheaper",
-  );
-});
-
-test("simulation keeps entity counts and player state inside the design envelope", () => {
-  for (const [category, seed, difficulty] of [
-    ["economy", 5, "normal"],
-    ["comfort", 11, "hardcore"],
-    ["business", 31, "relaxed"],
-  ]) {
-    const { world, avg } = play(category, seed, difficulty, false);
-    assert.ok(avg.targets >= 0.6, "playfield too empty: " + avg.targets);
-    assert.ok(avg.targets <= 6, "playfield overloaded: " + avg.targets);
-    assert.ok(world.player.cash >= 0, "cash went negative");
-    assert.ok(
-      world.player.heat >= 0 && world.player.heat <= 6,
-      "heat escaped 0..6",
-    );
-    assert.ok(
-      world.player.hearts >= 0 &&
-        world.player.hearts <= CLASSES[category].hearts,
-    );
-    assert.ok(world.targets.length <= 12, "target cap broken");
-    assert.ok(world.cops.length <= 3, "patrol cap broken");
-    assert.ok(world.drones.length <= 3, "drone cap broken");
-    assert.ok(world.props.length <= 6, "prop cap broken");
-    assert.ok(world.player.score >= 0);
-    assert.ok(avg.speed > 30 && avg.speed < CLASSES[category].maxSpeed * 1.3);
+test("коридор всегда существует и смещается на одну полосу", () => {
+  for (let level = 1; level <= MAX_LEVEL; level++)
+    assert.ok(core.blockedAt(level) < WORLD.lanes, "уровень " + level + " перекрыл все полосы");
+  const w = core.createRun(Object.assign({ seed: 11 }, COMFORT));
+  const state = { plan: 0, planAt: -1, noise: 0, rand: Math.random };
+  let corridor = w.corridor;
+  for (let i = 0; i < 60 * 240 && w.status === "running"; i++) {
+    core.step(w, DT, sim.botFor(w, "perfect", state));
+    w.events.length = 0;
+    assert.ok(Math.abs(w.corridor - corridor) <= 1, "коридор прыгнул дальше одной полосы");
+    corridor = w.corridor;
+    if (i % 4) continue;
+    const rows = {};
+    for (const s of w.props) rows[Math.round(s.y / 8)] = (rows[Math.round(s.y / 8)] || 0) + 1;
+    for (const count of Object.values(rows))
+      assert.ok(count < WORLD.lanes, "стена перекрыла все полосы");
   }
 });
 
-test("survival rate stays a skill question, not a coin flip or a formality", () => {
-  const runs = [];
-  for (const seed of [3, 9, 15, 21, 27, 33, 39, 45])
-    for (const category of ["economy", "comfort", "business"])
-      runs.push(play(category, seed, "normal", true));
-  const finished = runs.filter(
-    (r) => r.world.result.reason === "shift_end",
-  ).length;
-  const rate = finished / runs.length;
-  assert.ok(
-    rate >= 0.2,
-    "shift is unwinnable: " + (rate * 100).toFixed(0) + "%",
-  );
-  assert.ok(
-    rate <= 0.92,
-    "shift has no fail pressure: " + (rate * 100).toFixed(0) + "%",
-  );
-  const scores = runs.map((r) => r.world.result.score);
-  const grades = new Set(runs.map((r) => r.world.result.grade));
-  assert.ok(
-    Math.max(...scores) / Math.min(...scores) > 1.4,
-    "score spread too flat",
-  );
-  assert.ok(grades.size >= 2, "every run gets the same grade");
+test("облава догоняет того, кто не жмёт газ, и отстаёт от того, кто жмёт", () => {
+  const lazy = atLevel(core.createRun(Object.assign({ seed: 13 }, COMFORT)), RULES.raidLevel);
+  lazy.player.hearts = 999;
+  lazy.player.maxHearts = 999;
+  const gapStart = lazy.raid.y - lazy.player.y;
+  for (let i = 0; i < 60 * 90; i++) core.step(lazy, DT, { throttle: -1 });
+  assert.ok(lazy.raid.tight, "оцепление обязано наехать на тормозящего");
+  assert.ok(lazy.raid.y - lazy.player.y < gapStart, "дистанция должна сокращаться");
+  assert.ok(lazy.raid.hits > 0, "наезд обязан снимать бампер");
+
+  const fast = atLevel(core.createRun(Object.assign({ seed: 13 }, COMFORT)), RULES.raidLevel);
+  for (let i = 0; i < 60 * 30; i++) core.step(fast, DT, { throttle: 1 });
+  assert.ok(fast.raid.y - fast.player.y >= gapStart, "на полном газу оцепление отстаёт");
+  assert.equal(fast.raid.hits, 0);
 });
 
-test("bribes cost money and clear wanted level, protocols cost bumpers", () => {
-  const world = core.createRun({
-    category: "comfort",
-    seed: 4,
-    difficulty: "normal",
-  });
-  const p = world.player;
-  p.cash = 5000;
-  p.invuln = 0;
-  world.time = RULES.grace + 1;
-  core.spawnCop(world, false);
-  const cop = world.cops[0];
-  cop.x = p.x + 60;
-  cop.y = p.y;
-  core.step(world, DT, {});
-  assert.ok(p.encounter, "contact with a patrol must open an encounter");
-  const cashBefore = p.cash;
-  const heatBefore = p.heat;
-  p.cash = 99999;
-  core.step(world, DT, { bribe: true });
-  assert.equal(p.encounter, null, "paying must end the encounter");
-  assert.ok(p.cash < 99999, "bribe must cost cash");
-  assert.equal(world.stats.bribes, 1);
-  assert.ok(p.heat < heatBefore + 1, "bribe must not raise wanted level");
-
-  const stubborn = core.createRun({
-    category: "comfort",
-    seed: 8,
-    difficulty: "normal",
-  });
-  stubborn.player.hearts = 5;
-  stubborn.player.invuln = 0;
-  stubborn.time = RULES.grace + 1;
-  core.spawnCop(stubborn, false);
-  const blocker = stubborn.cops[0];
-  blocker.x = stubborn.player.x + 60;
-  blocker.y = stubborn.player.y;
-  core.step(stubborn, DT, {});
-  stubborn.player.cash = 0;
-  for (let i = 0; i < Math.ceil(RULES.bribeWindow / DT) + 5; i++)
-    core.step(stubborn, DT, {});
-  assert.equal(
-    stubborn.stats.failedBribes,
-    1,
-    "timeout must be logged as a protocol",
-  );
-  assert.ok(stubborn.player.hearts <= 4, "protocol must damage the bumper");
+test("на последнем уровне оцепление быстрее любого двигателя", () => {
+  for (const category of Object.keys(CLASSES)) {
+    const cls = CLASSES[category];
+    assert.ok(
+      core.raidKmhAt(MAX_LEVEL) > cls.maxSpeed * 1.22,
+      category + ": облава обязана настигать даже на нитро",
+    );
+    assert.ok(
+      core.raidKmhAt(RULES.raidLevel) < cls.maxSpeed,
+      category + ": на старте облавы газ спасает",
+    );
+  }
 });
 
-test("drones telegraph before they strike and never spawn on top of the player", () => {
-  const world = core.createRun({
-    category: "comfort",
-    seed: 6,
-    difficulty: "normal",
-  });
-  core.spawnDrone(world);
-  const drone = world.drones[0];
-  assert.ok(drone.y < WORLD.playerY - 400, "drone appeared too close");
+test("грация первой минуты и ремонт по износу кузова", () => {
+  const w = core.createRun(Object.assign({ seed: 12 }, COMFORT));
+  for (let i = 0; i < Math.ceil((RULES.grace - 2) / DT); i++) core.step(w, DT, {});
+  assert.equal(w.props.length, 0, "препятствия появляются только после грации");
+  assert.equal(w.drones.length, 0, "БПЛА летают только после грации");
+  assert.equal(w.raid.y - w.player.y, RULES.raidGap, "до облавы оцепление не виден");
+
+  const fresh = core.createRun(Object.assign({ seed: 4 }, COMFORT));
+  assert.equal(core.heartCapAt(fresh), fresh.player.maxHearts, "на старте ремонтируется всё");
+  const worn = atLevel(core.createRun(Object.assign({ seed: 4 }, COMFORT)), MAX_LEVEL);
+  worn.player.hearts = 1;
+  core.collect(worn, { kind: "repair", value: 1, x: worn.player.x, y: worn.player.y });
+  assert.ok(core.heartCapAt(worn) < worn.player.maxHearts, "наверху ремонт скромнее");
+  assert.ok(worn.player.hearts <= core.heartCapAt(worn), "кузов устал: ремонт ограничен износом");
+});
+
+test("БПЛА предупреждает удар и не появляется над машиной", () => {
+  const w = core.createRun(Object.assign({ seed: 6 }, COMFORT));
+  core.spawnDrone(w);
+  assert.ok(w.drones[0].y < WORLD.playerY - 400, "БПЛА появился слишком близко");
   const states = new Set();
   for (let i = 0; i < 60 * 12; i++) {
-    core.step(world, DT, {});
-    if (world.drones[0]) states.add(world.drones[0].state);
-    world.events.length = 0;
+    core.step(w, DT, {});
+    if (w.drones[0]) states.add(w.drones[0].state);
+    w.events.length = 0;
   }
   assert.ok(
     states.has("hover") || states.has("lock") || states.has("dive"),
-    "drone never engaged",
+    "БПЛА так и не включился",
   );
-  const locked = world.drones.find((d) => d.state === "lock");
-  if (locked) assert.ok(locked.timer > 0, "lock must have a visible wind-up");
 });
 
-test("nitro converts speed into offence against patrols and drones", () => {
-  const world = core.createRun({
-    category: "business",
-    seed: 2,
-    difficulty: "normal",
+test("нитро прошивает препятствия и даёт таран", () => {
+  const w = core.createRun(Object.assign({}, COMFORT, { seed: 2, category: "business" }));
+  w.player.nitro = 100;
+  w.player.invuln = 0;
+  w.time = RULES.grace + 1;
+  core.step(w, DT, { nitro: true });
+  assert.ok(w.player.nitroTime > 0, "нитро обязано загореться");
+  const hearts = w.player.hearts;
+  w.props.push({
+    id: 999,
+    kind: "barrier",
+    lane: core.laneAt(w.player.x),
+    x: w.player.x,
+    y: w.player.y - 20,
+    radius: 62,
+    damage: RULES.damage.barrier,
+    spin: 0,
+    used: false,
   });
-  world.player.nitro = 100;
-  world.player.invuln = 0;
-  world.time = RULES.grace + 1;
-  core.spawnCop(world, false);
-  const cop = world.cops[0];
-  cop.x = world.player.x + 40;
-  cop.y = world.player.y - 20;
-  core.step(world, DT, { nitro: true });
-  assert.ok(world.player.nitroTime > 0, "nitro must ignite");
-  const heatBefore = world.player.heat;
-  for (let i = 0; i < 30; i++) core.step(world, DT, {});
-  assert.ok(
-    world.stats.rams >= 1 || world.player.encounter,
-    "nitro ram or encounter must resolve",
-  );
-  assert.ok(world.player.heat >= heatBefore - 1);
+  core.step(w, DT, {});
+  assert.equal(w.player.hearts, hearts, "под нитро препятствие не бьёт");
+  core.spawnCop(w, false);
+  const cop = w.cops[0];
+  cop.x = w.player.x + 40;
+  cop.y = w.player.y - 20;
+  for (let i = 0; i < 30; i++) core.step(w, DT, {});
+  assert.ok(w.stats.rams >= 1 || w.player.encounter, "таран или диалог обязаны состояться");
 });
 
-test("grace period keeps the first seconds free of hazards", () => {
-  const world = core.createRun({
-    category: "comfort",
-    seed: 12,
-    difficulty: "normal",
-  });
-  for (let i = 0; i < Math.ceil((RULES.grace - 2) / DT); i++)
-    core.step(world, DT, {});
-  assert.equal(world.props.length, 0, "props must wait for the grace period");
-  assert.equal(world.drones.length, 0, "drones must wait for the grace period");
-  assert.ok(world.targets.length >= 0);
+test("любой забег заканчивается, и мастерство читается по дистанции", () => {
+  const byPolicy = {};
+  for (const policy of ["noob", "human", "perfect"]) byPolicy[policy] = series(policy, SEEDS);
+  for (const [policy, runs] of Object.entries(byPolicy))
+    for (const r of runs) {
+      assert.ok(
+        ["wrecked", "broke", "quit"].includes(r.reason),
+        policy + ": незавершённый забег " + r.reason,
+      );
+      assert.equal(r.capped, false, policy + ": забег упёрся в потолок симуляции");
+      assert.equal(r.grade, core.grade(r.score).grade);
+      assert.ok(
+        Math.abs(r.rentMinutes - (r.time * TIME_SCALE) / 60) <= 1,
+        policy + ": аренда не соответствует времени: " + r.rentMinutes + " vs " + r.time,
+      );
+      for (const [key, value] of Object.entries(r))
+        if (typeof value === "number")
+          assert.ok(Number.isFinite(value), policy + ": " + key + " не число");
+    }
+  const noob = median(byPolicy.noob.map((r) => r.time));
+  const human = median(byPolicy.human.map((r) => r.time));
+  const expert = median(byPolicy.perfect.map((r) => r.time));
+  assert.ok(noob < human, "новичок не должен жить дольше мастера: " + noob + "/" + human);
+  assert.ok(human >= 90, "давление убивает слишком быстро: " + human);
+  assert.ok(expert > 200, "мастер обязан задержаться на дороге: " + expert);
+  assert.ok(expert < 760, "потолок забега слишком высокий: " + expert);
 });
 
-test("world geometry keeps lanes inside the road", () => {
-  assert.equal(WORLD.laneCenters.length, WORLD.lanes);
-  for (const x of WORLD.laneCenters)
-    assert.ok(
-      x > WORLD.roadLeft && x < WORLD.roadRight,
-      "lane center escaped the road",
-    );
-  assert.ok(WORLD.roadTop > 0 && WORLD.roadTop < WORLD.playerY);
-  assert.ok(WORLD.playerY + 200 < WORLD.height);
-});
-
-test("each catalog model can earn a profit while rent makes winning a skill question", () => {
-  let totalWins = 0;
-  for (const [carName, category, rateKopecks] of [
-    ["Kia Rio", "economy", 900],
-    ["Hyundai Solaris", "economy", 950],
-    ["Skoda Octavia", "comfort", 1400],
-    ["BMW 320i", "business", 2200],
-  ]) {
-    const runs = [3, 9, 15, 21, 27, 33, 39, 45].map(
+test("классы машины различаются длиной забега и прибылью", () => {
+  const rows = ["economy", "comfort", "business"].map((category) => {
+    const tariff = { economy: 900, comfort: 1400, business: 2200 }[category];
+    const runs = SEEDS.map(
       (seed) =>
-        play(category, seed, "normal", true, { carName, rateKopecks }).world
+        sim.play("perfect", seed, { category, carName: "Тест", rateKopecks: tariff, cap: 800 })
           .result,
     );
-    const wins = runs.filter((r) => r.won).length;
-    assert.ok(
-      wins >= 1,
-      carName + " cannot repay its tariff even with careful play",
-    );
-    totalWins += wins;
-    for (const r of runs) {
-      assert.equal(r.profit, r.revenue - r.expenses - r.rentalCost);
-      assert.equal(r.cash - r.rentalDebt - r.startingCash, r.profit);
-      assert.equal(r.won, r.reason === "shift_end" && r.profit > 0);
-      assert.ok(r.rentalCost >= rateKopecks, "rent was never charged");
-    }
-  }
+    return {
+      category,
+      time: median(runs.map((r) => r.time)),
+      score: median(runs.map((r) => r.score)),
+      profit: median(runs.map((r) => r.profit)),
+    };
+  });
+  const byTime = rows.slice().sort((a, b) => a.time - b.time);
+  assert.notEqual(byTime[0].category, byTime[2].category, "классы не различаются длиной");
+  assert.ok(byTime[2].score / byTime[0].score > 1.15, "очки должны различаться между классами");
+  const cheap = rows.find((r) => r.category === "economy");
+  const pricey = rows.find((r) => r.category === "business");
   assert.ok(
-    totalWins >= 8 && totalWins <= 27,
-    "winning is automatic or too hard: " + totalWins + "/32",
+    cheap.profit >= pricey.profit,
+    "дешёвый тариф обязан окупаться легче: " + cheap.profit + " против " + pricey.profit,
   );
+});
+
+test("лестница оценок покрывает и провал, и рекорд", () => {
+  const weak = series("noob", SEEDS, { cap: 400 });
+  const strong = series("human", SEEDS, { cap: 800 });
+  assert.ok(
+    weak.every((r) => r.grade === "D" || r.grade === "C"),
+    "разбитый новичок не получает высоких оценок: " + weak.map((r) => r.grade).join(","),
+  );
+  assert.ok(
+    strong.some((r) => r.grade === "S"),
+    "S обязана быть достижимой: " + strong.map((r) => r.grade).join(","),
+  );
+  const ratio = GRADES[0].score / median(weak.map((r) => r.score));
+  assert.ok(ratio > 8, "до S обязано быть в разы дальше, чем до провала: ×" + ratio.toFixed(1));
+  for (const r of strong) assert.equal(r.stars, { S: 3, A: 2, B: 1 }[r.grade] || 0);
+});
+
+test("серверные пороги лидерборда зеркалят ядро игры", () => {
+  const service = fs.readFileSync(path.resolve(__dirname, "../../app/services/game.py"), "utf8");
+  const grab = (name) => Number(service.match(new RegExp("^" + name + " = (\\d+)$", "m"))[1]);
+  assert.equal(grab("LEVEL_SECONDS"), LEVEL_SECONDS);
+  assert.equal(grab("MAX_LEVEL"), MAX_LEVEL);
+  assert.ok(grab("SCORE_SLACK") > 4000, "запас по очкам/сек должен покрывать лучший забег");
+});
+
+test("геометрия мира держит полосы внутри дороги", () => {
+  assert.equal(WORLD.laneCenters.length, WORLD.lanes);
+  for (const x of WORLD.laneCenters)
+    assert.ok(x > WORLD.roadLeft && x < WORLD.roadRight, "полоса уехала с дороги");
+  assert.ok(WORLD.roadTop > 0 && WORLD.roadTop < WORLD.playerY);
+  assert.ok(WORLD.playerY + 200 < WORLD.height);
 });

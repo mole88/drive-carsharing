@@ -10,6 +10,7 @@
   const $ = (id) => document.getElementById(id);
   const W = core.WORLD;
   const RECORD_KEY = "drive.nightshift.records.v2";
+  const VOLUME_KEY = "drive.nightshift.volume.v1";
   const CAR_KEY = "drive.selectedCar";
 
   const state = {
@@ -26,9 +27,7 @@
     touchNitro: false,
     calm: false,
     muted: false,
-    coach: [],
-    coachIndex: 0,
-    coachTimer: 0,
+    volume: { music: 1, sfx: 1 },
     ducked: false,
     goPlayed: false,
     lastCheer: -99,
@@ -179,7 +178,6 @@
       plate: car.plate,
       category: car.category,
       rateKopecks: car.rate_kopecks,
-      difficulty: ($("drive-difficulty") || {}).value || "normal",
       seed: (Date.now() ^ Math.floor(Math.random() * 0xffffff)) & 0xffffff,
       color: palette[0],
       accent: palette[1],
@@ -217,7 +215,7 @@
     return !!(
       target &&
       target.closest &&
-      target.closest("input,select,textarea")
+      target.closest("input:not([type=range]),select,textarea")
     );
   }
 
@@ -231,6 +229,8 @@
         e.preventDefault();
     }
     if (e.code === "KeyP" || e.code === "Escape") togglePause();
+    if (e.code === "KeyV" && (state.mode === "playing" || state.mode === "paused"))
+      quitShift();
     if (e.code === "KeyR" && state.mode !== "intro") restart();
     if (e.code === "KeyM") setMuted(!state.muted);
     if (e.code === "Enter" && state.mode === "intro") start();
@@ -272,12 +272,16 @@
       e.preventDefault();
       state[prop] = true;
       state[prop + "Pressed"] = true;
+      if (el.setPointerCapture && e.pointerId !== undefined)
+        el.setPointerCapture(e.pointerId);
       audio.unlock();
     };
     const off = () => {
       state[prop] = false;
     };
     el.addEventListener("pointerdown", on);
+    for (const type of ["contextmenu", "selectstart", "dragstart"])
+      el.addEventListener(type, (e) => e.preventDefault());
     for (const type of ["pointerup", "pointercancel", "pointerleave"])
       el.addEventListener(type, off);
   }
@@ -328,7 +332,9 @@
       world.player.invuln = 1e9;
       world.player.heat = Math.max(0, world.player.heat - dt * 0.8);
       world.player.score = 0;
-      if (world.status !== "running") state.world = createWorld(true);
+      /* Витрина не доезжает до облавы: на 10-м уровне начинаем новый круг */
+      if (world.status !== "running" || world.level >= core.RULES.raidLevel)
+        state.world = createWorld(true);
     } else if (world.status === "running") {
       core.step(world, dt, input());
     }
@@ -361,6 +367,8 @@
     spin: "spin",
     shieldBreak: "shield",
     phase: "phase",
+    level: "phase",
+    raidClose: "siren",
   };
 
   function consumeEvents() {
@@ -401,6 +409,10 @@
           vy: -14,
         });
       }
+      if (e.type === "level" && e.level % 4 === 0)
+        worldPop(world, "ДАВЛЕНИЕ " + e.level, W.width / 2, 500, "bad", 1.5);
+      if (e.type === "raidClose")
+        worldPop(world, "ОБЛАВА ЕДЕТ", W.width / 2, 560, "bad", 2);
       if (e.type === "finished") showResult(e.reason);
     }
     world.events.length = 0;
@@ -493,6 +505,8 @@
         list.push({ y: s.y, kind: "prop", o: s });
     for (const q of world.pickups) list.push({ y: q.y, kind: "pickup", o: q });
     list.push({ y: world.player.y, kind: "player", o: world.player });
+    if (!world.attract && core.raidActive(world.level))
+      list.push({ y: world.raid.y, kind: "raid", o: world.raid });
     list.sort((a, b) => a.y - b.y);
 
     for (const item of list) {
@@ -519,6 +533,15 @@
         art.drone(ctx, o, { scale, time });
       } else if (item.kind === "prop") {
         art.prop(ctx, o);
+      } else if (item.kind === "raid") {
+        art.raid(ctx, {
+          y: o.y,
+          left: W.roadLeft,
+          right: W.roadRight,
+          time,
+          tight: o.tight,
+          scale,
+        });
       } else if (item.kind === "pickup") {
         art.pickup(ctx, o, { scale });
       } else if (item.kind === "player") {
@@ -636,6 +659,42 @@
   }
 
   /* ---------- HUD ---------- */
+  /* Полоса облавы: честный ответ на вопрос «успею ли газануть» */
+  function raidGauge(world) {
+    const strip = $("hud-raid");
+    if (!strip) return;
+    const gap = world.raid.y - world.player.y;
+    if (world.attract || !core.raidActive(world.level)) {
+      strip.hidden = true;
+      return;
+    }
+    strip.hidden = false;
+    $("hud-raid-fill").style.width =
+      Math.round(clamp(1 - gap / core.RULES.raidGap, 0, 1) * 100) + "%";
+    strip.classList.toggle("tight", world.raid.tight);
+    const closing = core.raidKmhAt(world.level) - world.player.speed;
+    $("hud-raid-note").textContent = world.raid.tight
+      ? "сидит на бампере — W или нитро"
+      : closing > 0
+        ? "догонит через " +
+          Math.max(1, Math.round(gap / (W.pxPerKmh * closing))) +
+          " с"
+        : "отстаёт — держи газ";
+  }
+
+  function retireLabel(world) {
+    const btn = $("hud-retire");
+    if (!btn) return;
+    const net = core.profit(world);
+    const label =
+      (net > 0 ? "Забрать " : "Вернуть в минус ") + money(Math.abs(net));
+    if (state.retireLabel !== label) {
+      state.retireLabel = label;
+      btn.textContent = label;
+      btn.classList.toggle("risky", net <= 0);
+    }
+  }
+
   function hud(dt) {
     const world = state.world;
     if (!world) return;
@@ -661,13 +720,13 @@
     $("hud-rate").textContent = money(world.car.rateKopecks) + "/мин";
     $("hud-debt").hidden = p.rentalDebt <= 0;
     $("hud-debt").textContent = "Долг за аренду: " + money(p.rentalDebt);
-    const left = Math.max(0, world.shift - world.time);
-    $("hud-time").textContent =
-      Math.floor(left / 60) +
-      ":" +
-      String(Math.floor(left % 60)).padStart(2, "0");
+    $("hud-level").textContent = world.level;
     $("hud-phase").textContent = world.phaseName;
+    $("hud-clock").textContent =
+      Math.floor((world.time * core.TIME_SCALE) / 60) + " мин";
     $("hud-speed").textContent = Math.round(p.speed);
+    raidGauge(world);
+    retireLabel(world);
     const fill = $("hud-nitro-fill");
     fill.style.width = clamp(p.nitro, 0, 100) + "%";
     fill.parentElement.parentElement.classList.toggle(
@@ -700,10 +759,6 @@
       ).join("");
       $("hud-heat").classList.toggle("alarm", stars >= 5 && !state.calm);
     }
-    if (left <= 10 && !state.finalCall && !world.attract) {
-      state.finalCall = true;
-      worldPop(world, "ФИНАЛ — 10 СЕКУНД", W.width / 2, 380, "gold", 1.6);
-    }
     if (!world.attract && !state.goPlayed && world.time >= 1.2) {
       state.goPlayed = true;
       audio.sfx("go");
@@ -711,7 +766,8 @@
     const combo = $("hud-combo");
     if (p.combo > 1) {
       combo.hidden = false;
-      combo.textContent = "×" + p.combo + "  (" + p.chain + ")";
+      combo.textContent = "×" + p.combo;
+      combo.title = "Цепочка: " + p.chain;
     } else combo.hidden = true;
 
     const powers = [];
@@ -724,10 +780,11 @@
     const chipText = powers.join(" · ");
     if ($("hud-powers").dataset.text !== chipText) {
       $("hud-powers").dataset.text = chipText;
-      $("hud-powers").innerHTML = chipText ? "<b>" + chipText + "</b>" : "";
+      $("hud-powers").innerHTML = powers.map((power) => "<b>" + power + "</b>").join("");
     }
 
     const prompt = $("bribe-prompt");
+    $("hud-retire").hidden = !!p.encounter;
     if (!!p.encounter !== state.ducked) {
       state.ducked = !!p.encounter;
       audio.duck(state.ducked);
@@ -740,52 +797,10 @@
       const broke = p.cash < p.encounter.cost;
       $("bribe-cost").parentElement.classList.toggle("insufficient", broke);
       $("bribe-note").textContent = broke
-        ? "кэша не хватает — собирай купюры"
-        : "ПРОБЕЛ / кнопка «дать взятку»";
+        ? "не хватает денег"
+        : "ПРОБЕЛ / Взятка";
     } else if (!prompt.hidden) prompt.hidden = true;
 
-    if (state.mode === "playing") coach(dt);
-  }
-
-  const COACH = [
-    {
-      at: 1.5,
-      text: "Окупи аренду: собирай купюры. Каждая начатая минута стоит тариф машины. Газ: W, руль: A / D",
-    },
-    { at: 9, text: "Сбивай силуэты цепочкой — комбо множит очки и розыск" },
-    {
-      at: 22,
-      text: "Розыск растёт: едут патрули. Жми ПРОБЕЛ рядом с ментом — дашь взятку",
-    },
-    {
-      at: 40,
-      text: "БПЛА подсвечивает полосу перед пикированием: смени полосу или собери глушилку",
-    },
-    {
-      at: 66,
-      text: "Нитро (SHIFT) таранит патруль и сбивает дроны — но розыск скакнёт вверх",
-    },
-  ];
-
-  function coach(dt) {
-    const world = state.world;
-    const el = $("drive-coach");
-    if (!world || world.attract) return;
-    const next = COACH[state.coachIndex];
-    if (next && world.time >= next.at) {
-      state.coachIndex += 1;
-      state.coachTimer = 4.2;
-      el.textContent = next.text;
-      el.hidden = false;
-      el.classList.add("show");
-    }
-    if (state.coachTimer > 0) {
-      state.coachTimer -= dt;
-      if (state.coachTimer <= 0) {
-        el.classList.remove("show");
-        el.hidden = true;
-      }
-    }
   }
 
   /* ---------- состояния ---------- */
@@ -794,15 +809,14 @@
     $("drive-intro").hidden = mode !== "intro";
     $("drive-pause").hidden = mode !== "paused";
     $("drive-result").hidden = mode !== "result";
-    $("hud").hidden = mode === "intro";
+    /* На итогах HUD прячем: он просвечивает сквозь затемнение оверлея */
+    $("hud").hidden = mode === "intro" || mode === "result";
   }
 
   function start() {
     audio.unlock();
     state.world = createWorld(false);
     state.scroll = 0;
-    state.coachIndex = 0;
-    state.coachTimer = 0;
     state.shownHearts = -1;
     state.shownHeat = -1;
     setMode("playing");
@@ -811,7 +825,7 @@
       worldPop(state.world, digit, p.x, p.y - 230, "gold", 0.45, i * 0.4),
     );
     worldPop(state.world, "ПОЕХАЛИ!", p.x, p.y - 230, "combo", 1.1, 1.25);
-    state.finalCall = false;
+    state.retireLabel = "";
     state.goPlayed = false;
     state.lastCheer = -99;
     const best = records().cars["car" + state.world.car.id];
@@ -847,6 +861,229 @@
     }
   }
 
+  /* ---------- лидерборд ---------- */
+  const boardCache = Object.create(null);
+  const boardFilters = { period: "week", category: "" };
+  const ESCAPES = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
+  const escapeHtml = (value) =>
+    String(value).replace(/[&<>"']/g, (char) => ESCAPES[char]);
+  /* Русное склонение: 1 игрок, 2 игрока, 5 игроков */
+  function plural(count, one, few, many) {
+    const tail = count % 100;
+    const last = count % 10;
+    if (tail >= 11 && tail <= 14) return many;
+    if (last === 1) return one;
+    if (last >= 2 && last <= 4) return few;
+    return many;
+  }
+
+  async function api(url, options) {
+    const response = await fetch(url, options);
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.detail || "Сервер не ответил");
+    return data;
+  }
+
+  function submitScore(result) {
+    const world = state.world;
+    return api("/api/game/scores", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        car_id: world.car.id || null,
+        car_name: world.car.name,
+        category: world.car.category,
+        score: result.score,
+        level: result.level,
+        knockdowns: result.knockdowns,
+        drones: result.drones,
+        bribes: result.bribes,
+        profit_kopecks: result.profit,
+        duration_seconds: result.time,
+        reason: result.reason,
+      }),
+    });
+  }
+
+  async function loadBoard() {
+    const key = boardFilters.period + "|" + boardFilters.category;
+    const cached = boardCache[key];
+    if (cached && Date.now() - cached.at < 15000) return cached.data;
+    const query = new URLSearchParams({ period: boardFilters.period });
+    if (boardFilters.category) query.set("category", boardFilters.category);
+    const data = await api("/api/game/leaderboard?" + query.toString());
+    boardCache[key] = { at: Date.now(), data };
+    return data;
+  }
+
+  function boardHeader() {
+    const press = (attr, value, label, active) =>
+      `<button type="button" data-${attr}="${value}" aria-pressed="${active}">${label}</button>`;
+    const period = (name, label) =>
+      press("period", name, label, boardFilters.period === name);
+    const category = (name, label) =>
+      press("category", name, label, boardFilters.category === name);
+    return (
+      '<div class="board-top"><h3>Таблица заезда</h3><div class="board-filters">' +
+      period("week", "Неделя") +
+      period("all", "Всё время") +
+      "</div><div class=\"board-filters\">" +
+      category("", "Все классы") +
+      category("economy", "Эконом") +
+      category("comfort", "Комфорт") +
+      category("business", "Бизнес") +
+      "</div></div>"
+    );
+  }
+
+  function boardMarkup(board) {
+    if (!board.rows.length)
+      return '<p class="board-note">Пока пусто: первый заезд открывает таблицу.</p>';
+    const rows = board.rows
+      .map(
+        (row) =>
+          `<tr class="${row.is_me ? "me" : ""}"><td>${row.rank}</td>` +
+          `<td class="board-name">${escapeHtml(row.name)}</td>` +
+          `<td>${escapeHtml(row.car_name)}</td>` +
+          `<td><strong>${row.score.toLocaleString("ru-RU")}</strong></td>` +
+          `<td>${row.level}</td><td>${row.duration_seconds} с</td></tr>`,
+      )
+      .join("");
+    const about = board.me
+      ? `Ты: ${board.me.rank ? "#" + board.me.rank : "вне таблицы"} · ` +
+        `${board.me.score.toLocaleString("ru-RU")} очков за ${board.me.plays} ` +
+        plural(board.me.plays, "заезд", "заезда", "заездов") +
+        (board.me.best_ever ? `, рекорд ${board.me.best_ever.toLocaleString("ru-RU")}` : "")
+      : "Войди в аккаунт — заезд попадёт в таблицу.";
+    return (
+      '<table class="board-table"><thead><tr><th>#</th><th>Кто</th><th>Машина</th>' +
+      "<th>Очки</th><th>Ур.</th><th>Заезд</th></tr></thead><tbody>" +
+      rows +
+      `</tbody></table><p class="board-note">${about} · всего ` +
+      `${board.totals.players} ${plural(board.totals.players, "игрок", "игрока", "игроков")}</p>`
+    );
+  }
+
+  async function renderBoard(id) {
+    const el = $(id);
+    if (!el) return;
+    el.hidden = false;
+    el.innerHTML = boardHeader() + '<p class="board-note">Загружаем таблицу…</p>';
+    try {
+      const board = await loadBoard();
+      el.innerHTML = boardHeader() + boardMarkup(board);
+      state.lastBoard = board;
+      if (id === "board-result") paintRank(board);
+    } catch (error) {
+      el.innerHTML =
+        boardHeader() +
+        `<p class="board-note">Таблица недоступна: ${escapeHtml(error.message)}</p>`;
+    }
+  }
+
+  function paintRank(board) {
+    const el = $("result-rank");
+    if (!el) return;
+    if (!board) return;
+    if (!board.me || !board.me.rank) {
+      el.textContent =
+        state.boardNote || "Войди в аккаунт, чтобы попадать в таблицу.";
+      return;
+    }
+    const period = boardFilters.period === "all" ? "за всё время" : "за неделю";
+    el.textContent =
+      `Место ${period}: #${board.me.rank} из ${board.totals.players}` +
+      (state.lastSubmission && state.lastSubmission.improved
+        ? " · новый личный рекорд недели"
+        : "");
+  }
+
+  function onBoardClick(event) {
+    const period = event.target.closest("[data-period]");
+    const category = event.target.closest("[data-category]");
+    if (!period && !category) return;
+    if (period) boardFilters.period = period.dataset.period;
+    if (category) boardFilters.category = category.dataset.category;
+    for (const id of ["board-intro", "board-result"])
+      if ($(id) && !$(id).hidden) renderBoard(id);
+  }
+
+  /* Комментатор в углу: режем зелёный фон ролика на лету.
+     Каскад 200 px — кадр стоит доли миллисекунды и не грузит игровой цикл. */
+  const CASTER_SRC = "/static/video/commentator.mp4";
+  const CASTER_SIZE = 200;
+  function startCaster() {
+    const out = $("drive-caster");
+    const video = $("caster-source");
+    if (!out || !video || !out.getContext) return;
+    if (!video.canPlayType || !video.canPlayType("video/mp4")) {
+      out.hidden = true;
+      return;
+    }
+    const ctx = out.getContext("2d");
+    const work = document.createElement("canvas");
+    const wctx = work.getContext("2d", { willReadFrequently: true });
+    let ready = false;
+    video.addEventListener("loadeddata", () => {
+      const ratio = video.videoWidth ? CASTER_SIZE / video.videoWidth : 1;
+      out.width = work.width = CASTER_SIZE;
+      out.height = work.height = Math.max(
+        1,
+        Math.round((video.videoHeight || CASTER_SIZE) * ratio),
+      );
+      ready = true;
+    });
+    video.src = CASTER_SRC;
+    /* Без пользовательского жеста браузер не пускает автоплей: пробуем сразу и ещё раз при клике */
+    const attempt = () =>
+      video
+        .play()
+        .then(() => {
+          out.hidden = false;
+        })
+        .catch(() => {});
+    attempt();
+    for (const type of ["pointerdown", "keydown"])
+      window.addEventListener(type, attempt, { once: true });
+    let last = 0;
+    const pump = (now) => {
+      requestAnimationFrame(pump);
+      if (!ready || video.readyState < 2 || now - last < 33) return;
+      last = now;
+      wctx.drawImage(video, 0, 0, work.width, work.height);
+      const frame = wctx.getImageData(0, 0, work.width, work.height);
+      const px = frame.data;
+      let top = work.height;
+      let bottom = -1;
+      for (let i = 0; i < px.length; i += 4) {
+        const r = px[i];
+        const b = px[i + 2];
+        const mx = r > b ? r : b;
+        const green = px[i + 1] - mx;
+        if (green > 48) {
+          px[i + 3] = 0;
+          continue;
+        }
+        if (px[i + 1] > mx + 24) px[i + 1] = mx + 24;
+        if (green > 14)
+          px[i + 3] = Math.round(px[i + 3] * (1 - (green - 14) / 34));
+        if (px[i + 3] > 100) {
+          const y = Math.floor(i / 4 / work.width);
+          top = Math.min(top, y);
+          bottom = Math.max(bottom, y);
+        }
+      }
+      // Anchor visible pixels to the nitro bar, not the video's empty green field.
+      if (bottom >= top) {
+        const height = bottom - top + 1;
+        if (out.height !== height) out.height = height;
+        ctx.clearRect(0, 0, out.width, out.height);
+        ctx.putImageData(frame, 0, -top);
+      } else ctx.clearRect(0, 0, out.width, out.height);
+    };
+    requestAnimationFrame(pump);
+  }
+
   function showResult(reason) {
     if (state.mode === "result") return;
     const world = state.world;
@@ -855,13 +1092,16 @@
     audio.engine(false);
     audio.music(false);
     const isBest = saveRecord(world.car.id, result);
+    const minutes = Math.floor((result.time * core.TIME_SCALE) / 60);
     $("result-kicker").textContent =
       reason === "wrecked"
         ? "БАМПЕР ДОЕЗДИЛСЯ"
-        : reason === "quit"
-          ? "СМЕНА ПРЕРВАНА"
-          : "СМЕНА ЗАКРЫТА";
-    $("result-grade").textContent = result.won ? result.grade : "−";
+        : reason === "broke"
+          ? "ДОЛГ ПО ДОГОВОРУ"
+          : result.won
+            ? "КАССА ЗАБРАНА"
+            : "МАШИНА В ПАРКЕ";
+    $("result-grade").textContent = result.grade;
     $("result-title").textContent = result.won
       ? "Смена в плюсе!"
       : result.profitable
@@ -871,20 +1111,35 @@
     $("result-profit").classList.toggle("loss", result.profit < 0);
     $("result-score").textContent =
       result.score.toLocaleString("ru-RU") +
-      " очков · бонус " +
-      result.bonus +
       " очков" +
+      (result.bonus
+        ? " (с кассой +" + result.bonus.toLocaleString("ru-RU") + ")"
+        : "");
+    $("result-meta").textContent =
+      "уровень " +
+      result.level +
+      " из " +
+      core.MAX_LEVEL +
       " · " +
+      result.time +
+      " с за рулём · " +
+      minutes +
+      " мин по тарифу · " +
       world.car.name +
       " " +
       world.car.plate;
     $("result-stars").innerHTML = Array.from(
       { length: 3 },
-      (_, i) =>
-        `<span class="${result.won && i < result.stars ? "" : "off"}">★</span>`,
+      (_, i) => `<span class="${i < result.stars ? "" : "off"}">★</span>`,
     ).join("");
+    const gif = $("result-gif");
+    gif.src = "/static/images/" + (result.won ? "smoking.gif" : "fuk.gif");
+    gif.alt = result.won ? "Тест-драйв удался" : "Мимо кассы";
+    gif.classList.toggle("win", result.won);
     const rows = [
-      ["Выручка за смену", money(result.revenue)],
+      ["Уровень давления", result.level + " / " + core.MAX_LEVEL],
+      ["Заезд", result.time + " с · " + minutes + " мин по тарифу"],
+      ["Выручка", money(result.revenue)],
       [
         "Аренда · " + money(result.rateKopecks) + "/мин",
         money(result.rentalCost),
@@ -900,39 +1155,65 @@
       ["Протоколов", result.failed],
       ["БПЛА валено", result.drones],
       ["Таранов патруля", result.rams],
+      ["Облава наезжала", result.raidHits + " раз"],
       ["Уклонов от дронов", result.dodges],
       ["Кэш в кармане", money(result.cash)],
-      ["Долг за аренду", money(result.rentalDebt)],
+      [
+        "Долг по договору",
+        money(result.rentalDebt) + " / " + money(result.debtLimit),
+      ],
       ["Максимум км/ч", result.topSpeed],
       ["Дистанция", result.distance.toFixed(1) + " км"],
     ];
     $("result-stats").innerHTML = rows
       .map((r) => `<li><span>${r[0]}</span><strong>${r[1]}</strong></li>`)
       .join("");
-    const note = [];
-    note.push(
-      "Стартовые 50 ₽ не входят в выручку. Для победы нужно доехать до конца и заработать больше аренды и остальных расходов.",
-    );
+    const note = [
+      "Прогресс бесконечный: с каждой минутой город давит сильнее, а оцепление ускоряется. Стартовые 50 ₽ в выручку не входят.",
+    ];
     if (isBest) note.push("Новый рекорд на этой машине!");
     const best = records().cars["car" + world.car.id];
     if (best) note.push("Рекорд: " + best.best.toLocaleString("ru-RU"));
+    if (result.raidHits > 2)
+      note.push(
+        "Совет: как только облава сядет на бампер — включай нитро, оно быстрее оцепления.",
+      );
     if (result.failed > result.bribes)
       note.push("Совет: держи кэш — пустой карман означает протокол.");
     if (result.knockdowns > 0 && result.bribes === 0 && result.failed > 0)
       note.push("Взятка дешевле ремонта: копи купюры и жми ПРОБЕЛ.");
     $("result-note").textContent = note.join(" ");
-    if (result.reason === "wrecked") {
+    if (result.won) audio.sfx("win");
+    else if (result.reason === "wrecked") {
       audio.sfx("lose");
       audio.sfx("loseWreck");
-    } else if (result.reason === "quit") {
-      audio.sfx("lose");
-    } else if (result.won) {
-      audio.sfx("win");
     } else {
       audio.sfx("lose");
       audio.sfx("defeat");
     }
     setMode("result");
+    publishScore(result);
+  }
+
+  /* Отдаём заезд на сервер и обновляем таблицу; гость видит причину молча. */
+  async function publishScore(result) {
+    const rank = $("result-rank");
+    state.lastSubmission = null;
+    state.boardNote = "";
+    if (result.time < 10 || result.score <= 0)
+      state.boardNote = "Заезд короче 10 секунд в таблицу не попадает.";
+    else
+      try {
+        state.lastSubmission = await submitScore(result);
+      } catch (error) {
+        state.boardNote =
+          error.message.indexOf("Сессия") >= 0
+            ? "Войди в аккаунт, чтобы попадать в таблицу."
+            : "В таблицу не записано: " + error.message;
+      }
+    for (const key of Object.keys(boardCache)) delete boardCache[key];
+    if (rank) rank.textContent = state.boardNote || "Считаем место…";
+    renderBoard("board-result");
   }
 
   function quitShift() {
@@ -953,6 +1234,66 @@
     btn.setAttribute("aria-pressed", String(state.muted));
   }
 
+  /* Громкость игрока: 1 = как выровнено по RMS, хранится в браузере. */
+  function readVolume() {
+    const base = { music: 1, sfx: 1 };
+    let saved = null;
+    try {
+      saved = JSON.parse(localStorage.getItem(VOLUME_KEY));
+    } catch (error) {
+      void error;
+    }
+    if (!saved || typeof saved !== "object") return base;
+    for (const key of ["music", "sfx"]) {
+      const value = Number(saved[key]);
+      if (Number.isFinite(value)) base[key] = clamp(value, 0, 1.5);
+    }
+    return base;
+  }
+
+  function applyVolume() {
+    audio.setVolume("music", state.volume.music);
+    audio.setVolume("sfx", state.volume.sfx);
+    for (const key of ["music", "sfx"]) {
+      const slider = $("vol-" + key);
+      const out = $("vol-" + key + "-value");
+      const percent = Math.round(state.volume[key] * 100);
+      if (slider) slider.value = String(percent);
+      if (out) out.textContent = percent + "%";
+    }
+  }
+
+  function saveVolume() {
+    try {
+      localStorage.setItem(VOLUME_KEY, JSON.stringify(state.volume));
+    } catch (error) {
+      void error;
+    }
+  }
+
+  function bindVolume() {
+    const button = $("drive-volume");
+    const panel = $("drive-volume-panel");
+    if (button && panel) {
+      button.addEventListener("click", () => {
+        panel.hidden = !panel.hidden;
+        button.setAttribute("aria-pressed", String(!panel.hidden));
+      });
+    }
+    for (const key of ["music", "sfx"]) {
+      const slider = $("vol-" + key);
+      if (!slider) continue;
+      slider.addEventListener("input", () => {
+        state.volume[key] = clamp(Number(slider.value) / 100, 0, 1.5);
+        applyVolume();
+        saveVolume();
+      });
+      /* чтобы стрелки руления не уехали в ползунок после отпускания */
+      slider.addEventListener("pointerup", () => slider.blur());
+    }
+    applyVolume();
+  }
+
   function setRecordsPreview() {
     const car = state.car || defaultCar();
     const best = records().cars["car" + car.id];
@@ -962,7 +1303,7 @@
       el.textContent =
         "Рекорд на этой машине: " +
         best.best.toLocaleString("ru-RU") +
-        " очков · смен: " +
+        " очков · заездов: " +
         best.runs +
         " · лучшее комбо ×" +
         best.combo +
@@ -1000,15 +1341,17 @@
         (
           core.CLASSES[car.category] || core.CLASSES.comfort
         ).label.toLowerCase() +
-        ") выехал на проспект. Смена длится 2:30.";
+        ") выехал на проспект. Заезд бесконечный: едете, пока не разобьётесь.";
     const profile = core.carProfile(car);
     $("intro-perk").textContent = profile.perk;
     $("intro-tariff").textContent =
       (car.rentalTariff ? "Тариф вашей аренды: " : "Тариф машины: ") +
       money(car.rate_kopecks) +
-      "/мин · до " +
-      money(core.rentalCost(car.rate_kopecks, core.SHIFT_SECONDS)) +
-      " за смену. Каждая начатая минута оплачивается целиком.";
+      "/мин · секунда за рулём = " +
+      core.TIME_SCALE +
+      " минут тарифа · долг свыше " +
+      money(car.rate_kopecks * core.DEBT_MINUTES) +
+      " — машина уезжает в парк.";
     $("intro-specs").textContent =
       "Скин: " +
       profile.label +
@@ -1054,6 +1397,11 @@
     $("resume").addEventListener("click", () => togglePause());
     $("quit").addEventListener("click", quitShift);
     $("again").addEventListener("click", restart);
+    $("hud-retire").addEventListener("click", quitShift);
+    for (const id of ["board-intro", "board-result"])
+      if ($(id)) $(id).addEventListener("click", onBoardClick);
+    renderBoard("board-intro");
+    startCaster();
     $("drive-sound").addEventListener("click", () => setMuted(!state.muted));
     $("drive-calm").addEventListener("click", () => {
       state.calm = !state.calm;
@@ -1062,11 +1410,11 @@
         ? "Без миганий: вкл"
         : "Без миганий";
     });
-    for (const id of ["drive-difficulty"])
-      if ($(id)) $(id).addEventListener("change", setRecordsPreview);
     document.addEventListener("visibilitychange", () => {
       if (document.hidden && state.mode === "playing") togglePause(true);
     });
+    state.volume = readVolume();
+    bindVolume();
     requestAnimationFrame(loop);
   }
 
@@ -1082,9 +1430,17 @@
     render,
     hud,
     consumeEvents,
+    showResult,
     createWorld,
     records,
     saveRecord,
+    renderBoard,
+    loadBoard,
+    submitScore,
+    publishScore,
+    startCaster,
+    bindVolume,
+    applyVolume,
     boot,
   };
   if (document.readyState === "loading")

@@ -91,9 +91,10 @@ start.ps1           одна точка локального запуска
 Игровая экономика отделена от настоящих платежей. Экран 18+, вымышленная сатира.
 
 Реализация — четыре файла без сборки: `game-core.js` (логика и баланс, без DOM и canvas),
-`game-art.js` (векторная графика), `game-audio.js` (WebAudio-синтез), `game.js` (цикл, ввод,
+`game-art.js` (canvas-графика и PNG-спрайты), `game-audio.js` (WebAudio-синтез), `game.js` (цикл, ввод,
 HUD, оверлеи, рекорды в `localStorage`). Обоснование геймдизайна, таблицы баланса и способ
-проверки — [docs/game-design.md](docs/game-design.md).
+проверки — [docs/game-design.md](docs/game-design.md). Спрайты персонажей в гламурном стиле
+нулевых и промпты лежат в [app/static/images/sprites/nightlife](app/static/images/sprites/nightlife/README.md).
 
 ## Проверка
 

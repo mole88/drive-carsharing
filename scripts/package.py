@@ -20,7 +20,19 @@ FILES = (
     "pnpm-lock.yaml",
 )
 DIRECTORIES = ("app", "migrations", "tests", "docs", "scripts")
-SOURCE_EXTENSIONS = {".py", ".html", ".css", ".js", ".cjs", ".md", ".png", ".mp3"}
+SOURCE_EXTENSIONS = {
+    ".py",
+    ".html",
+    ".css",
+    ".js",
+    ".cjs",
+    ".md",
+    ".png",
+    ".webp",
+    ".mp3",
+    ".gif",
+    ".mp4",
+}
 
 
 def source_files(root: Path = ROOT):

@@ -14,6 +14,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from app.api.accounts import router as accounts_router
 from app.api.admin import router as admin_router
 from app.api.cars import router as cars_router
+from app.api.game import router as game_router
 from app.api.rentals import router as rentals_router
 from app.api.support import router as support_router
 from app.core.config import settings
@@ -66,6 +67,7 @@ app.include_router(accounts_router)
 app.include_router(admin_router)
 app.include_router(support_router)
 app.include_router(rentals_router)
+app.include_router(game_router)
 app.include_router(pages_router)
 
 

@@ -7,6 +7,11 @@
 
 from pathlib import Path
 from shutil import copy2
+from sys import stdout
+
+# Консоль Windows в cp1252 спотыкается о кириллицу и стрелки.
+if hasattr(stdout, "reconfigure"):
+    stdout.reconfigure(encoding="utf-8", errors="replace")
 
 ROOT = Path(__file__).resolve().parents[1]
 INBOX = ROOT / "sounds"
@@ -71,7 +76,9 @@ def sync():
         print("\nДобавьте в SAMPLES (app/static/game-audio.js):")
         print("\n".join(lines))
     if unknown:
-        print("\nНеизвестные слоты — переименуйте файл под один из списка или скажите, куда играть:")
+        print(
+            "\nНеизвестные слоты — переименуйте файл под один из списка или скажите, куда играть:"
+        )
         print("\n".join(unknown))
         print("\nДоступные слоты: " + ", ".join(SLOTS))
     return 0

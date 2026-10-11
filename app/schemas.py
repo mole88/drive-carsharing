@@ -76,3 +76,52 @@ class RentalOut(BaseModel):
     @field_serializer("created_at", "started_at", "finished_at", "expires_at", "server_now")
     def serialize_utc(self, value):
         return value.isoformat() + "Z" if value else None
+
+
+class ScoreInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+    car_id: int | None = Field(default=None, gt=0)
+    car_name: str = Field(default="", max_length=125)
+    category: Literal["economy", "comfort", "business"] = "comfort"
+    score: int = Field(ge=0, le=5000000)
+    level: int = Field(ge=1, le=60)
+    knockdowns: int = Field(ge=0, le=30000)
+    drones: int = Field(ge=0, le=3000, default=0)
+    bribes: int = Field(ge=0, le=3000, default=0)
+    profit_kopecks: int = Field(ge=-100000000, le=100000000, default=0)
+    duration_seconds: int = Field(ge=10, le=7200)
+    reason: Literal["wrecked", "broke", "quit"]
+
+
+class ScoreOut(BaseModel):
+    accepted: bool
+    improved: bool
+    score: int
+    level: int
+    week: str
+    personal: dict
+
+
+class LeaderRow(BaseModel):
+    rank: int
+    name: str
+    car_name: str
+    category: str
+    score: int
+    level: int
+    knockdowns: int
+    drones: int
+    bribes: int
+    profit_kopecks: int
+    duration_seconds: int
+    reason: str
+    is_me: bool
+
+
+class BoardOut(BaseModel):
+    period: str
+    week: str | None
+    category: str | None
+    rows: list[LeaderRow]
+    totals: dict
+    me: dict | None

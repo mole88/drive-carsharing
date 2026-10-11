@@ -6,13 +6,15 @@
   const TRACK_SRC = "/static/audio/testdrive.mp3";
   const TRACK_FADE_IN = 2600;
   const TRACK_FADE_OUT = 600;
-  const TRACK_FALLBACK_LEVEL = 0.08;
+  const TRACK_FALLBACK_LEVEL = 0.12;
   const DUCK_RATIO = 0.32;
-  /* Целевая громкость по RMS: реплики слышны поверх трека и эффектов. */
-  const LEVELS = { comment: 0.085, music: 0.032, loop: 0.06 };
+  /* Целевая громкость по RMS: трек слышен вместе с репликами, а не под ними. */
+  const LEVELS = { comment: 0.085, music: 0.075, loop: 0.07 };
   const GAIN_LIMIT = { min: 0.02, max: 1 };
   const LOOP_SRC = "/static/audio/mellstroy-business-meme.mp3";
   const LOOP_FADE = 0.45;
+  /* Уровень шин до ручек громкости: на них накладывается выбор игрока. */
+  const BUS = { sfx: 0.8, music: 0.16, master: 0.9 };
   /* Реплики: ключ = слот события, layer играет вместе с синтезом.
      Ключи принимаются и в snake_case (drone_lock == droneLock). */
   const SAMPLES = {
@@ -20,12 +22,15 @@
     nitro: "audio/mellstroy-raduetsa-edited.mp3",
     encounter: "audio/skolkonahui.mp3",
     bribe: "audio/schitaet.mp3",
+    win: "audio/bravo.mp3",
     loseWreck: "audio/mellstroy-stop-stop-stop-stop.mp3",
     defeat: "audio/melstroi-vozmushchaetsia.mp3",
     droneLock: "audio/mellstroy-krik1.mp3",
     droneDive: "audio/mellstroy-krik2.mp3",
     babachai: "audio/mellstroy-babachai.mp3",
   };
+  /* Слоты, где реплика полностью заменяет синтез (пока файла нет — играет синтезатор). */
+  const REPLACE = ["win"];
 
   let ctx = null;
   let master = null;
@@ -34,6 +39,8 @@
   let engine = null;
   let noiseBuffer = null;
   let muted = false;
+  /* Ручки громкости: 1 = как измерено, игрок может убрать до 0 или поднять до 1.5 */
+  const volumes = { music: 1, sfx: 1 };
   let scheduler = null;
   let stepIndex = 0;
   let nextNote = 0;
@@ -72,16 +79,27 @@
     if (!AC) return null;
     ctx = new AC();
     master = ctx.createGain();
-    master.gain.value = muted ? 0 : 0.9;
+    master.gain.value = muted ? 0 : BUS.master;
     master.connect(ctx.destination);
     sfxGain = ctx.createGain();
-    sfxGain.gain.value = 0.8;
+    sfxGain.gain.value = BUS.sfx * volumes.sfx;
     sfxGain.connect(master);
     musicGain = ctx.createGain();
-    musicGain.gain.value = 0.16;
+    musicGain.gain.value = BUS.music * volumes.music;
     musicGain.connect(master);
     noiseBuffer = makeNoise();
     return ctx;
+  }
+
+  /* Громкость реплики: измеренная RMS-подстройка поверх неё ручка «звуки». */
+  function voiceLevel(slot) {
+    const base = levels.comment[slot] || LEVELS.comment;
+    return Math.max(0, Math.min(1, base * volumes.sfx));
+  }
+
+  /* Луп правил — часть музыкальной шины, поэтому живёт под ручкой «музыка». */
+  function loopLevel() {
+    return Math.max(0, Math.min(1, levels.loop * volumes.music));
   }
 
   const freq = (semi) => 110 * Math.pow(2, semi / 12);
@@ -354,13 +372,13 @@
         measure(url).then((m) => {
           levels.comment[slot] = gainTo(m.rms, LEVELS.comment);
           durations[slot] = m.duration;
-          if (samples[slot]) samples[slot].volume = levels.comment[slot];
+          if (samples[slot]) samples[slot].volume = voiceLevel(slot);
         }),
       );
     }
     await Promise.all(jobs);
     if (track) {
-      trackLevel = levels.music;
+      trackLevel = levels.music * volumes.music;
       if (musicOn && !muted) rampTrack(trackLevel, 400);
     }
     return levels;
@@ -371,7 +389,7 @@
     if (typeof global.Audio !== "function") return null;
     const el = new global.Audio(urlOf(SAMPLES[slot]));
     el.preload = "auto";
-    el.volume = levels.comment[slot] || LEVELS.comment;
+    el.volume = voiceLevel(slot);
     samples[slot] = el;
     return el;
   }
@@ -382,7 +400,7 @@
     if (!el) return;
     try {
       el.currentTime = 0;
-      el.volume = levels.comment[slot] || LEVELS.comment;
+      el.volume = voiceLevel(slot);
       el.play().catch(() => {});
     } catch (error) {
       void error;
@@ -460,7 +478,7 @@
     } catch (error) {
       void error;
     }
-    crossfade(current, next, LOOP_FADE * 1000, levels.loop, () => {
+    crossfade(current, next, LOOP_FADE * 1000, loopLevel(), () => {
       current.pause();
       current.volume = 0;
     });
@@ -472,7 +490,7 @@
       el.currentTime = 0;
       el.volume = 0;
       el.play().catch(() => {});
-      fadeElement(el, muted ? 0 : levels.loop, LOOP_FADE * 1000);
+      fadeElement(el, muted ? 0 : loopLevel(), LOOP_FADE * 1000);
     } catch (error) {
       void error;
     }
@@ -493,13 +511,13 @@
     },
     setMuted(value) {
       muted = !!value;
-      if (master) master.gain.value = muted ? 0 : 0.9;
+      if (master) master.gain.value = muted ? 0 : BUS.master;
       for (const [slot, el] of Object.entries(samples))
-        if (el) el.volume = muted ? 0 : levels.comment[slot] || LEVELS.comment;
+        if (el) el.volume = muted ? 0 : voiceLevel(slot);
       for (const el of loopElements) {
         if (!el) continue;
         if (muted) el.volume = 0;
-        else if (loopOn) fadeElement(el, levels.loop, 250);
+        else if (loopOn) fadeElement(el, loopLevel(), 250);
       }
       if (track && !trackBroken) {
         rampTrack(muted ? 0 : musicOn ? trackLevel : 0, 250);
@@ -509,6 +527,28 @@
     },
     isMuted() {
       return muted;
+    },
+    /* Ручка громкости: kind = music|sfx, value = 0..1.5 (1 = как измерено). */
+    setVolume(kind, value) {
+      const next = Number(value);
+      if (!(kind in volumes) || !Number.isFinite(next))
+        return Object.assign({}, volumes);
+      volumes[kind] = Math.max(0, Math.min(1.5, next));
+      if (musicGain) musicGain.gain.value = BUS.music * volumes.music;
+      if (sfxGain) sfxGain.gain.value = BUS.sfx * volumes.sfx;
+      if (kind === "music") {
+        trackLevel = levels.music * volumes.music;
+        if (track && !trackBroken) rampTrack(muted || !musicOn ? 0 : trackLevel, 120);
+        for (const el of loopElements)
+          if (el && loopOn && !muted) el.volume = loopLevel();
+      } else {
+        for (const [slot, el] of Object.entries(samples))
+          if (el && !muted) el.volume = voiceLevel(slot);
+      }
+      return Object.assign({}, volumes);
+    },
+    getVolume() {
+      return Object.assign({}, volumes);
     },
     engine(on, speedNorm, nitro) {
       if (!ctx) return;
@@ -545,8 +585,11 @@
     sfx(name) {
       if (!ctx) api.unlock();
       if (muted) return;
-      if (ctx && SFX[name]) SFX[name]();
       const slot = slotOf(name);
+      /* Замена работает, только если реплика действительно докачалась */
+      const replaced =
+        !!slot && REPLACE.indexOf(canonical(name)) >= 0 && durations[slot] > 0;
+      if (!replaced && ctx && SFX[name]) SFX[name]();
       if (slot) playSample(slot);
     },
     comment(name) {
@@ -658,7 +701,7 @@
         if (done >= steps) {
           clearInterval(timer);
           el.pause();
-          el.volume = levels.comment[slot] || LEVELS.comment;
+          el.volume = voiceLevel(slot);
         }
       }, 40);
     },
@@ -684,7 +727,9 @@
         trackTime: track ? Number(track.currentTime.toFixed(1)) : 0,
         trackReady: track ? track.readyState : -1,
         levels: api.levels(),
+        volumes: api.getVolume(),
         voices: Object.keys(samples),
+        replaced: REPLACE.filter((slot) => durations[slot] > 0),
         voiceStates: Object.fromEntries(
           Object.entries(samples).map(([slot, el]) => [
             slot,

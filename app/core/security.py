@@ -108,3 +108,15 @@ def admin_user(user: User = Depends(current_user)):
     if not user.is_admin:
         raise HTTPException(403, "Требуются права администратора")
     return user
+
+
+def optional_user(
+    request: Request, token: str | None = Depends(oauth2), db: Session = Depends(get_db)
+):
+    """Для публичных эндпоинтов: гость остаётся гостем, а не ошибкой."""
+    try:
+        return current_user(request, token=token, db=db)
+    except HTTPException as error:
+        if error.status_code != 401:
+            raise
+        return None

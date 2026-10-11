@@ -107,3 +107,33 @@ class AuditEvent(Base):
     action: Mapped[str] = mapped_column(String(80))
     target: Mapped[str] = mapped_column(String(80))
     created_at: Mapped[datetime] = mapped_column(default=utcnow)
+
+
+class GameScore(Base):
+    """Лучший результат игрока за неделю: одна строка на (user, week)."""
+
+    __tablename__ = "game_scores"
+    __table_args__ = (
+        CheckConstraint("score >= 0"),
+        CheckConstraint("level >= 1"),
+        CheckConstraint("reason IN ('wrecked','broke','quit')"),
+        Index("ix_game_week_score", "week", "score"),
+        Index("ix_game_score", "score"),
+        Index("uq_game_user_week", "user_id", "week", unique=True),
+    )
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    week: Mapped[str] = mapped_column(String(9), default="")
+    car_id: Mapped[int | None] = mapped_column(ForeignKey("cars.id"))
+    car_name: Mapped[str] = mapped_column(String(125), default="")
+    category: Mapped[str] = mapped_column(String(30), default="comfort")
+    score: Mapped[int] = mapped_column(default=0)
+    level: Mapped[int] = mapped_column(default=1)
+    knockdowns: Mapped[int] = mapped_column(default=0)
+    drones: Mapped[int] = mapped_column(default=0)
+    bribes: Mapped[int] = mapped_column(default=0)
+    profit_kopecks: Mapped[int] = mapped_column(default=0)
+    duration_seconds: Mapped[int] = mapped_column(default=0)
+    reason: Mapped[str] = mapped_column(String(16), default="wrecked")
+    created_at: Mapped[datetime] = mapped_column(default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(default=utcnow)

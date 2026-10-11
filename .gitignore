@@ -13,3 +13,4 @@ node_modules/
 *.db-wal
 *.db-shm
 /sounds/
+/gifs/

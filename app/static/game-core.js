@@ -29,7 +29,8 @@
       bribeDiscount: 0,
       magnet: 96,
       nitroGain: 7.5,
-      perk: "Юркая: рулится резче всех и набивает нитро с полуоборота — кто быстро думает, тот быстро уезжает.",
+      cashGain: 1.5,
+      perk: "Дешёвый тариф — easiest окупить: аренда съедает мало, нитро копится с полуоборота. Денег с одного клиента меньше.",
     },
     comfort: {
       label: "Комфорт",
@@ -41,7 +42,8 @@
       bribeDiscount: 0.06,
       magnet: 118,
       nitroGain: 5.5,
-      perk: "Городской баланс: разгон, держак и снисходительный патруль.",
+      cashGain: 1.9,
+      perk: "Городской баланс: тариф и чек средние, держак честный, патруль снисходительный.",
     },
     business: {
       label: "Бизнес",
@@ -53,15 +55,43 @@
       bribeDiscount: 0.2,
       magnet: 138,
       nitroGain: 4.5,
-      perk: "Тяжёлый таран: ловит ямы вполбампера и договаривается дешевле всех — но повороты на себя тянет долго.",
+      cashGain: 2.4,
+      perk: "Дорогой тариф, но и чек жирнее: бизнес-класс платят больше. Тяжёлый таран, мягкие ямы, скидка на взятки — и медленно рулится.",
     },
   };
 
-  const DIFFICULTY = {
-    relaxed: { spawn: 0.78, heatGain: 0.75, label: "Прогулка" },
-    normal: { spawn: 1, heatGain: 1, label: "Смена" },
-    hardcore: { spawn: 1.32, heatGain: 1.25, label: "Пикет" },
-  };
+  /* Прокат идёт ускоренно: 1 реальная секунда = TIME_SCALE минутных секунд аренды.
+     Так тариф за несколько минут наезда сопоставим с реальным каршерингом. */
+  const TIME_SCALE = 8;
+  const LEVEL_SECONDS = 22;
+  const MAX_LEVEL = 30;
+  const DEBT_MINUTES = 12;
+  const levelAt = (seconds) =>
+    Math.max(1, Math.min(MAX_LEVEL, 1 + Math.floor(seconds / LEVEL_SECONDS)));
+  /* Давление города растёт с уровнем без потолка, как ряды в Тетрисе:
+     рано или поздно город побеждает — вопрос только в том, с каким плюсом уедешь. */
+  const pressureAt = (level) => 1 + (level - 1) * 0.09;
+  const heatScaleAt = (level) => 1 + Math.min(0.55, (level - 1) * 0.035);
+  const bonusAt = (level) => 1 + Math.min(1.6, (level - 1) * 0.08);
+  const copCapAt = (level) => Math.min(4, 1 + Math.floor(level / 4));
+  const droneCapAt = (level) => Math.min(4, 1 + Math.floor((level - 1) / 5));
+  const targetCapAt = (level) => Math.min(14, 7 + Math.floor(level / 3));
+  const propCapAt = (level) => Math.min(6, 3 + Math.floor(level / 5));
+  /* Полосы-«стены» с 8-го уровня: коридор сужается к одной полосе, как ряды в Тетрисе */
+  const blockedAt = (level) =>
+    Math.max(0, Math.min(WORLD.lanes - 1, Math.floor((level - 4) / 4)));
+  const wallChance = (level) =>
+    blockedAt(level) < 1 ? 0 : Math.min(0.72, 0.22 + (level - 4) * 0.035);
+  /* Урон растёт вместе с давлением — забег обязан когда-нибудь закончиться */
+  const damageScaleAt = (level) => Math.min(1.9, 1 + (level - 1) * 0.05);
+  /* Кузов устаёт: на высоком давлении ремонт не поднимает выше износа */
+  const heartCapAt = (world) =>
+    Math.max(2, world.player.maxHearts - Math.floor(Math.max(0, world.level - 6) / 4));
+  const raidActive = (level) => level >= RULES.raidLevel;
+  const raidKmhAt = (level) =>
+    level < RULES.raidLevel
+      ? 0
+      : RULES.raidKmhBase + (level - 1) * RULES.raidKmhStep;
 
   const CARS = {
     "kia rio": {
@@ -160,7 +190,10 @@
   }
 
   function chargeRental(world) {
-    const total = rentalCost(world.car.rateKopecks, world.time);
+    const total = rentalCost(
+      world.car.rateKopecks,
+      world.time * TIME_SCALE,
+    );
     const charge = total - world.stats.rentalCost;
     if (charge <= 0) return;
     const paid = Math.min(world.player.cash, charge);
@@ -171,7 +204,7 @@
   }
 
   function credit(world, baseValue) {
-    const value = Math.round(baseValue * 2.1);
+    const value = Math.round(baseValue * 2.1 * (world.cls.cashGain || 1));
     world.stats.cashEarned += value;
     const repaid = Math.min(world.player.rentalDebt, value);
     world.player.rentalDebt -= repaid;
@@ -186,17 +219,17 @@
   }
 
   const PHASES = [
-    { name: "Дворы", until: 50, spawn: 1, tint: "dusk", bonus: 1 },
-    { name: "Проспект", until: 105, spawn: 1.2, tint: "night", bonus: 1.15 },
-    { name: "Неоновый пик", until: 1e9, spawn: 1.4, tint: "neon", bonus: 1.3 },
+    { name: "Дворы", tint: "dusk" },
+    { name: "Проспект", tint: "night" },
+    { name: "Неоновый пик", tint: "neon" },
   ];
 
-  const SHIFT_SECONDS = 150;
+  /* Оценка по очкам: пороги привязаны к длине забега (~3900 очков/сек на полном газу) */
   const GRADES = [
-    { grade: "S", score: 70000, title: "Король ночного проспекта" },
-    { grade: "A", score: 50000, title: "Легенда района" },
-    { grade: "B", score: 32000, title: "Ночной завсегдатай" },
-    { grade: "C", score: 18000, title: "Довольно бодро" },
+    { grade: "S", score: 1700000, title: "Король ночного проспекта" },
+    { grade: "A", score: 950000, title: "Легенда района" },
+    { grade: "B", score: 470000, title: "Ночной завсегдатай" },
+    { grade: "C", score: 200000, title: "Довольно бодро" },
     { grade: "D", score: 0, title: "Первая practice-смена" },
   ];
 
@@ -211,9 +244,9 @@
     heatDecay: 0.2,
     heatDecayIdle: 0.45,
     heatIdleAfter: 5,
-    bribeBase: 320,
-    bribePerHeat: 240,
-    bribeEscalation: 0.08,
+    bribeBase: 260,
+    bribePerHeat: 150,
+    bribeEscalation: 0.05,
     bribeWindow: 1.5,
     droneLock: 1.35,
     droneHover: 0.9,
@@ -223,6 +256,14 @@
     powerupTime: 9,
     grace: 12,
     damage: { pothole: 0.42, barrier: 0.75, drone: 0.7, curb: 0, protocol: 1 },
+    /* Облава: оцепление едет сзади и с уровнем быстрее предела машины — забег конечен */
+    raidLevel: 7,
+    raidKmhBase: 62,
+    raidKmhStep: 6.4,
+    raidGap: 500,
+    raidTouch: 150,
+    raidPunch: 170,
+    raidDamage: 1,
   };
 
   const PICKUPS = {
@@ -258,7 +299,10 @@
   function createRun(options) {
     const cfg = options || {};
     const cls = carProfile(cfg);
-    const difficulty = DIFFICULTY[cfg.difficulty] || DIFFICULTY.normal;
+    const rate =
+      Number.isSafeInteger(cfg.rateKopecks) && cfg.rateKopecks > 0
+        ? cfg.rateKopecks
+        : DEFAULT_RATES[cfg.category] || DEFAULT_RATES.comfort;
     const world = {
       seed: cfg.seed || Date.now() & 0xffffff,
       rng: rand(cfg.seed || Date.now() & 0xffffff),
@@ -270,16 +314,22 @@
         color: cfg.color || "#d5ff5f",
         accent: cfg.accent || "#17312e",
         skin: cls.skin,
-        rateKopecks:
-          Number.isSafeInteger(cfg.rateKopecks) && cfg.rateKopecks > 0
-            ? cfg.rateKopecks
-            : DEFAULT_RATES[cfg.category] || DEFAULT_RATES.comfort,
+        rateKopecks: rate,
       },
       cls,
-      difficulty,
+      timeScale: TIME_SCALE,
+      debtLimit: rate * DEBT_MINUTES,
       rules: RULES,
       time: 0,
-      shift: cfg.shift || SHIFT_SECONDS,
+      level: 1,
+      levelShown: 1,
+      corridor: Math.floor(WORLD.lanes / 2),
+      raid: {
+        y: WORLD.playerY + RULES.raidGap,
+        shown: false,
+        tight: false,
+        hits: 0,
+      },
       phase: 0,
       phaseName: PHASES[0].name,
       status: "running",
@@ -351,13 +401,11 @@
   }
 
   function phaseInfo(world) {
-    let index = PHASES.length - 1;
-    for (let i = 0; i < PHASES.length; i++)
-      if (world.time < PHASES[i].until) {
-        index = i;
-        break;
-      }
-    return Object.assign({ index }, PHASES[index]);
+    const index = Math.min(
+      PHASES.length - 1,
+      Math.floor((world.level - 1) / 3),
+    );
+    return Object.assign({ index, bonus: bonusAt(world.level) }, PHASES[index]);
   }
 
   function spawnTarget(world, options) {
@@ -427,7 +475,7 @@
   }
 
   function spawnCop(world, pursue) {
-    if (world.cops.length >= 3) return;
+    if (world.cops.length >= copCapAt(world.level)) return;
     const rng = world.rng;
     const lane = pursue
       ? laneAt(world.player.x)
@@ -461,7 +509,7 @@
   }
 
   function spawnDrone(world) {
-    if (world.drones.length >= 3) return;
+    if (world.drones.length >= droneCapAt(world.level)) return;
     const rng = world.rng;
     const drone = {
       id: nextId++,
@@ -482,16 +530,20 @@
     emit(world, "droneSpawn", { x: drone.x });
   }
 
-  function spawnProp(world) {
+  function spawnProp(world, laneArg, forcedY, kindArg) {
     const rng = world.rng;
     const kinds =
       world.phase > 1
         ? ["cone", "oil", "pothole", "barrier", "pothole", "cone"]
         : ["cone", "oil", "pothole", "cone"];
-    const kind = kinds[Math.floor(rng() * kinds.length)];
-    const lane = Math.floor(rng() * WORLD.lanes);
-    const spawnY = -160 - rng() * 200;
+    const kind =
+      kindArg || kinds[Math.floor(rng() * kinds.length)];
+    const lane =
+      laneArg === undefined ? Math.floor(rng() * WORLD.lanes) : laneArg;
+    const spawnY = forcedY === undefined ? -160 - rng() * 200 : forcedY;
     if (
+      lane < 0 ||
+      lane >= WORLD.lanes ||
       world.props.some((s) => s.lane === lane && Math.abs(s.y - spawnY) < 520)
     )
       return;
@@ -516,6 +568,32 @@
       spin: rng() * Math.PI,
       used: false,
     });
+  }
+
+  /* Стена перекрывает полосы целиком, оставляя связный коридор в 1-2 полосы.
+     Коридор смещается максимум на полосу от предыдущего — зажать насмерть невозможно. */
+  function spawnWall(world) {
+    const rng = world.rng;
+    const blocked = blockedAt(world.level);
+    if (blocked < 1) {
+      spawnProp(world);
+      return;
+    }
+    const freeCount = WORLD.lanes - blocked;
+    let from = world.corridor + (rng() < 0.5 ? -1 : 1) * (rng() < 0.7 ? 1 : 0);
+    from = Math.max(0, Math.min(WORLD.lanes - freeCount, from));
+    world.corridor = from + Math.floor(freeCount / 2);
+    const y = -170 - rng() * 40;
+    const wallKinds = ["pothole", "barrier", "oil", "barrier", "pothole"];
+    for (let lane = 0; lane < WORLD.lanes; lane++) {
+      if (lane >= from && lane < from + freeCount) continue;
+      spawnProp(
+        world,
+        lane,
+        y,
+        wallKinds[Math.floor(rng() * wallKinds.length)],
+      );
+    }
   }
 
   function spawnPickup(world, kind, x, y, value) {
@@ -638,6 +716,7 @@
     }
     p.armor +=
       (amount *
+        damageScaleAt(world.level) *
         (source === "protocol"
           ? 1
           : 0.62 + 0.85 * clamp(p.speed / world.cls.maxSpeed, 0, 1))) /
@@ -654,6 +733,9 @@
     p.combo = 1;
     p.comboTime = 0;
     world.stats.damageTaken += 1;
+    /* Удар — это потеря темпа: оцепление выигрывает дистанцию, ошибки дорожают */
+    if (world.raid)
+      world.raid.y = Math.max(p.y - 40, world.raid.y - RULES.raidPunch);
     burst(world, "shake", 0, 0, { power: 22 });
     popText(world, "БАМ!", p.x, p.y - 130, "bad");
     emit(world, "damage", { source, hearts: p.hearts });
@@ -694,7 +776,7 @@
     p.heat = clamp(
       p.heat +
         (target.vip ? RULES.heatPerVip : RULES.heatPerKnock) *
-          world.difficulty.heatGain,
+          heatScaleAt(world.level),
       0,
       6,
     );
@@ -827,7 +909,7 @@
     cop.spinSpeed = (cop.x < p.x ? -1 : 1) * 9;
     cop.leaving = 1;
     cop.flash = 0.35;
-    p.heat = clamp(p.heat + 0.9 * world.difficulty.heatGain, 0, 6);
+    p.heat = clamp(p.heat + 0.9 * heatScaleAt(world.level), 0, 6);
     p.score += 420;
     p.chain += 1;
     p.combo = comboOf(p.chain);
@@ -1103,7 +1185,7 @@
             world.stats.dronesDown += 1;
             p.score += 520;
             credit(world, 180);
-            if (p.hearts < p.maxHearts && world.rng() < 0.4) {
+            if (p.hearts < heartCapAt(world) && world.rng() < 0.4) {
               p.hearts += 1;
               popText(world, "ЗАПЧАСТИ +1 БАМПЕР", d.x, d.y - 76, "good");
             } else popText(world, "БПЛА СБИТ! +520", d.x, d.y - 40, "gold");
@@ -1233,7 +1315,7 @@
       p.nitro = clamp(p.nitro + 34, 0, 100);
       popText(world, "НИТРО +34", q.x, q.y - 30, "gold");
     } else if (q.kind === "repair") {
-      if (p.hearts < p.maxHearts) {
+      if (p.hearts < heartCapAt(world)) {
         p.hearts += 1;
         popText(world, "БАМПЕР ЦЕЛ", q.x, q.y - 30, "good");
       } else {
@@ -1265,15 +1347,40 @@
     emit(world, "power", { key: q.kind });
   }
 
+  /* Облава: оцепление нагоняет сзади. Пока машина медленнее кордона, дистанция тает;
+     на остановке ради взятки кордон въезжает в упор, но бьёт уже после размолвки. */
+  function updateRaid(world, dt) {
+    const p = world.player;
+    const raid = world.raid;
+    if (!raidActive(world.level)) return;
+    const rel = WORLD.pxPerKmh * (p.speed - raidKmhAt(world.level));
+    raid.y = Math.max(
+      p.y - 40,
+      Math.min(raid.y + rel * dt, p.y + RULES.raidGap),
+    );
+    const dist = raid.y - p.y;
+    if (!raid.shown && dist < 340) {
+      raid.shown = true;
+      popText(world, "ОБЛАВА НАГОНЯЕТ!", p.x, p.y - 190, "bad");
+      emit(world, "raidClose", { dist });
+    }
+    raid.tight = dist < RULES.raidTouch;
+    if (!raid.tight || p.encounter) return;
+    if (damage(world, RULES.damage.raid, "raid")) {
+      raid.hits += 1;
+      popText(world, "ОЦЕПЛЕНИЕ!", p.x, p.y + 40, "bad");
+    }
+  }
+
   function updateSpawns(world, dt) {
     const t = world.timers;
     const phase = phaseInfo(world);
     const heat = world.player.heat;
-    const rate = world.difficulty.spawn * phase.spawn;
+    const rate = pressureAt(world.level);
     const warm = world.time > RULES.grace;
 
     t.target -= dt * rate;
-    if (t.target <= 0 && world.targets.length < 9) {
+    if (t.target <= 0 && world.targets.length < targetCapAt(world.level)) {
       crowd(world);
       t.target = 1.8 + world.rng() * 1.4 - heat * 0.05;
     }
@@ -1289,8 +1396,9 @@
     }
     if (warm) {
       t.prop -= dt * rate;
-      if (t.prop <= 0 && world.props.length < 4) {
-        spawnProp(world);
+      if (t.prop <= 0 && world.props.length < propCapAt(world.level)) {
+        if (world.rng() < wallChance(world.level)) spawnWall(world);
+        else spawnProp(world);
         t.prop = 2.6 + world.rng() * 2.4 - phase.index * 0.2;
       }
       if (phase.index >= 1 || heat >= 2) {
@@ -1319,12 +1427,15 @@
     if (world.result) return world.result;
     chargeRental(world);
     const p = world.player;
-    world.status =
-      world.status === "wrecked" ? "wrecked" : reason || "shift_end";
+    world.status = world.status === "wrecked" ? "wrecked" : reason || "quit";
+    /* Добровольно вернуть машину — касса плюс бонус за целые бамперы.
+       Разбился или ушёл в минус по договору — ничего не доначисляется. */
+    const retired = world.status === "quit";
+    /* Касса возврата — четверть набежавших очков плюс целые бамперы и тихий розыск */
     const bonus =
-      world.status === "shift_end"
-        ? Math.round(p.cash * 0.5 + p.hearts * 600 + (p.heat < 1 ? 500 : 0))
-        : Math.round(p.cash * 0.2);
+      retired && profit(world) > 0
+        ? Math.round(p.score * 0.25 + p.hearts * 4000 + (p.heat < 1 ? 8000 : 0))
+        : 0;
     p.score += bonus;
     world.cashBonus = bonus;
     const g = grade(p.score);
@@ -1339,10 +1450,14 @@
       expenses: world.stats.cashSpent,
       rentalCost: world.stats.rentalCost,
       rentalDebt: p.rentalDebt,
+      debtLimit: world.debtLimit,
       profit: profit(world),
       rateKopecks: world.car.rateKopecks,
+      rentMinutes: Math.floor((world.time * TIME_SCALE) / 60),
+      level: world.level,
       profitable: profit(world) > 0,
-      won: world.status === "shift_end" && profit(world) > 0,
+      won: retired && profit(world) > 0,
+      retired,
       bonus,
       knockdowns: world.stats.knockdowns,
       vip: world.stats.vipKnockdowns,
@@ -1354,17 +1469,20 @@
       dodges: world.stats.dodges,
       distance: world.stats.distance,
       topSpeed: Math.round(world.stats.topSpeed),
+      raidHits: world.raid.hits,
+      raidKmh: Math.round(raidKmhAt(world.level)),
       time: Math.round(world.time),
       stars:
-        p.score >= 50000 ? 3 : p.score >= 32000 ? 2 : p.score >= 18000 ? 1 : 0,
+        g.grade === "S" ? 3 : g.grade === "A" ? 2 : g.grade === "B" ? 1 : 0,
     };
     emit(world, "finished", { reason: world.status });
   }
 
   function step(world, dt, input) {
     if (world.status !== "running") return world;
-    const frame = Math.max(0, Math.min(dt, 0.05, world.shift - world.time));
+    const frame = Math.max(0, Math.min(dt, 0.05));
     world.time += frame;
+    world.level = levelAt(world.time);
     chargeRental(world);
     world.stats.bestChain = Math.max(
       world.stats.bestChain || 0,
@@ -1392,6 +1510,7 @@
     updateCops(world, frame, scroll, input2);
     updateDrones(world, frame, scroll);
     updateProps(world, frame, scroll);
+    updateRaid(world, frame);
     updatePickups(world, frame, scroll);
     updateSpawns(world, frame);
     for (let k = world.fx.length - 1; k >= 0; k--) {
@@ -1401,8 +1520,15 @@
       if (f.life >= f.ttl) world.fx.splice(k, 1);
     }
     if (world.status === "wrecked" && !world.result) finish(world, "wrecked");
-    else if (world.time >= world.shift && !world.result)
-      finish(world, "shift_end");
+    else if (
+      world.player.rentalDebt >= world.debtLimit &&
+      !world.result
+    )
+      finish(world, "broke");
+    else if (!world.result && world.level !== world.levelShown) {
+      world.levelShown = world.level;
+      emit(world, "level", { level: world.level });
+    }
     return world;
   }
 
@@ -1414,12 +1540,27 @@
     carProfile,
     rentalCost,
     profit,
-    DIFFICULTY,
+    TIME_SCALE,
+    LEVEL_SECONDS,
+    MAX_LEVEL,
+    DEBT_MINUTES,
+    levelAt,
+    pressureAt,
+    heatScaleAt,
+    bonusAt,
+    copCapAt,
+    droneCapAt,
+    targetCapAt,
+    propCapAt,
+    blockedAt,
+    damageScaleAt,
+    heartCapAt,
+    raidActive,
+    raidKmhAt,
     PHASES,
     RULES,
     PICKUPS,
     GRADES,
-    SHIFT_SECONDS,
     createRun,
     step,
     phaseInfo,

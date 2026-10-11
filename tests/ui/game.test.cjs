@@ -50,6 +50,7 @@ async function screen(name, options = {}) {
         };
   const requests = [];
   const errors = [];
+  const audioCalls = [];
   const virtualConsole = new VirtualConsole();
   virtualConsole.on("jsdomError", (error) => errors.push(error.message));
   let html = read("app/templates/base.html");
@@ -78,7 +79,7 @@ async function screen(name, options = {}) {
   };
   w.fetch = async (url, options2 = {}) => {
     const route = url.split("?")[0];
-    requests.push({ url, route });
+    requests.push({ url, route, options: options2 });
     let data;
     if (route === "/api/auth/me") data = user || { detail: "Sign in" };
     else if (route === "/api/cars") data = [car];
@@ -87,6 +88,40 @@ async function screen(name, options = {}) {
       data = { completed_count: 0, total_kopecks: 0 };
     else if (route === "/api/rentals/current") data = options.current || null;
     else if (route === "/api/rentals") data = options.rentals || [];
+    else if (route === "/api/game/leaderboard")
+      data = {
+        period: "week",
+        week: "2026-W41",
+        category: null,
+        rows: [
+          {
+            rank: 1,
+            name: '<img src=x onerror="alert(1)">',
+            car_name: "BMW 320i",
+            category: "business",
+            score: 2100000,
+            level: 26,
+            knockdowns: 1000,
+            drones: 40,
+            bribes: 12,
+            profit_kopecks: 50000,
+            duration_seconds: 520,
+            reason: "wrecked",
+            is_me: false,
+          },
+        ],
+        totals: { players: 1, runs: 1 },
+        me: user ? { rank: 2, score: 90000, best_ever: 90000, plays: 1 } : null,
+      };
+    else if (route === "/api/game/scores")
+      data = {
+        accepted: true,
+        improved: true,
+        score: 90000,
+        level: 5,
+        week: "2026-W41",
+        personal: { rank: 2, score: 90000, best_ever: 90000, plays: 1 },
+      };
     else throw new Error("Unexpected request: " + url);
     if (options.missingCar && route.startsWith("/api/cars/"))
       return {
@@ -114,7 +149,22 @@ async function screen(name, options = {}) {
     };
     w.GameAudio = new Proxy(
       {},
-      { get: (_, name) => (name === "setMuted" ? (value) => value : () => {}) },
+      {
+        get: (target, name) =>
+          name in target
+            ? target[name]
+            : name === "setMuted"
+              ? (value) => value
+              : name === "getVolume"
+                ? () => ({ music: 1, sfx: 1 })
+                : (...args) => {
+                    audioCalls.push([String(name), args]);
+                  },
+        set: (target, name, value) => {
+          target[name] = value;
+          return true;
+        },
+      },
     );
     vm.runInContext(
       read("app/static/game-core.js"),
@@ -123,7 +173,7 @@ async function screen(name, options = {}) {
     vm.runInContext(read("app/static/game.js"), dom.getInternalVMContext());
   }
   await pause();
-  return { w, requests, errors, close: () => dom.window.close() };
+  return { w, requests, errors, audioCalls, close: () => dom.window.close() };
 }
 
 test("drive page ships canvas, HUD and every overlay", async () => {
@@ -135,7 +185,10 @@ test("drive page ships canvas, HUD and every overlay", async () => {
     for (const id of [
       "hud-score",
       "hud-cash",
-      "hud-time",
+      "hud-level",
+      "hud-clock",
+      "hud-raid",
+      "hud-retire",
       "hud-hearts",
       "hud-heat",
       "hud-nitro-fill",
@@ -146,17 +199,28 @@ test("drive page ships canvas, HUD and every overlay", async () => {
       "drive-pause",
       "drive-result",
       "drive-start",
-      "drive-difficulty",
       "drive-sound",
       "drive-calm",
+      "drive-volume",
+      "drive-volume-panel",
+      "vol-music",
+      "vol-sfx",
+      "drive-caster",
+      "board-intro",
+      "board-result",
       "result-grade",
       "result-stats",
       "result-stars",
+      "result-meta",
+      "result-rank",
+      "result-gif",
       "touch-bribe",
       "touch-nitro",
-      "drive-coach",
     ])
       assert.ok(d.getElementById(id), "missing #" + id);
+    assert.equal(d.getElementById("drive-difficulty"), null, "один режим сложности");
+    assert.equal(d.getElementById("hud-time"), null, "таймера смены больше нет");
+    assert.equal(d.getElementById("drive-coach"), null, "обучающие подсказки не закрывают дорогу");
     const ids = [...d.querySelectorAll("[id]")].map((e) => e.id);
     assert.equal(ids.length, new Set(ids).size, "duplicate IDs");
     assert.match(d.querySelector(".drive-disclaimer").textContent, /сатира/i);
@@ -328,6 +392,241 @@ test("a missing selected car cannot silently start a different car", async () =>
       /недоступна/,
     );
     assert.equal(p.w.DriveGame.state.world, null);
+  } finally {
+    p.close();
+  }
+});
+
+test("the HUD shows pressure instead of a shift countdown", async () => {
+  const p = await screen("drive", { game: true, query: "?car=1", current: rental });
+  try {
+    const d = p.w.document;
+    const g = p.w.DriveGame;
+    g.start();
+    g.step(1 / 60);
+    g.hud(1 / 60);
+    assert.equal(d.getElementById("hud-level").textContent, "1");
+    assert.equal(d.getElementById("hud-raid").hidden, true, "облава раньше времени");
+    assert.match(d.getElementById("hud-clock").textContent, /мин/);
+    const world = g.state.world;
+    world.time = 150;
+    g.step(1 / 60);
+    g.hud(1 / 60);
+    assert.ok(Number(d.getElementById("hud-level").textContent) >= 7, "уровень растёт");
+    assert.equal(d.getElementById("hud-raid").hidden, false, "полоса облавы появилась");
+    assert.match(d.getElementById("hud-raid-note").textContent, /\d|газ|держит|сидит/);
+    assert.match(d.getElementById("hud-retire").textContent, /Забрать|Вернуть/);
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});
+
+test("the run posts a score the leaderboard service accepts", async () => {
+  const p = await screen("drive", { game: true, query: "?car=1", current: rental, role: "user" });
+  try {
+    const g = p.w.DriveGame;
+    g.start();
+    const world = g.state.world;
+    world.time = 240;
+    world.player.score = 400000;
+    world.player.hearts = 3;
+    world.stats.cashEarned = 300000;
+    world.player.cash = 250000;
+    p.w.GameCore.finish(world, "quit");
+    await g.publishScore(world.result);
+    await pause();
+    const sent = p.requests.find((r) => r.route === "/api/game/scores");
+    assert.ok(sent, "результат не отправлен");
+    assert.equal(sent.options.method, "POST");
+    const body = JSON.parse(sent.options.body);
+    assert.equal(body.reason, "quit");
+    assert.equal(body.score, world.result.score);
+    assert.equal(body.car_id, 1);
+    assert.ok(body.duration_seconds >= 10, "слишком короткий заезд");
+    assert.ok(
+      body.level <= Math.min(30, 1 + Math.floor(body.duration_seconds / 22) + 2),
+      "уровень не соответствует длительности",
+    );
+    assert.ok(body.score <= body.duration_seconds * 9000, "очки кажутся накрученными");
+    assert.ok(body.knockdowns <= body.duration_seconds * 12, "сбитые кажутся накрученными");
+    assert.match(p.w.document.getElementById("result-rank").textContent, /#2/);
+  } finally {
+    p.close();
+  }
+});
+
+test("a short run is politely refused instead of faked to the server", async () => {
+  const p = await screen("drive", { game: true, query: "?car=1", current: rental, role: "user" });
+  try {
+    const g = p.w.DriveGame;
+    g.start();
+    const world = g.state.world;
+    world.time = 4;
+    world.player.score = 900;
+    p.w.GameCore.finish(world, "quit");
+    await g.publishScore(world.result);
+    assert.ok(
+      !p.requests.some((r) => r.route === "/api/game/scores"),
+      "короткий заезд не должен уходить на сервер",
+    );
+    assert.match(p.w.document.getElementById("result-rank").textContent, /короче 10/);
+  } finally {
+    p.close();
+  }
+});
+
+test("the leaderboard renders, escapes names and follows the filters", async () => {
+  const p = await screen("drive", { game: true, query: "?car=1", current: rental, role: "user" });
+  try {
+    const board = p.w.document.getElementById("board-intro");
+    for (let i = 0; i < 4; i++) await pause();
+    assert.equal(board.hidden, false);
+    assert.match(board.textContent, /Таблица заезда/);
+    assert.equal(board.querySelectorAll("img").length, 0, "имя игрока экранировано");
+    assert.equal(board.querySelectorAll("[onerror]").length, 0, "no live markup from names");
+    assert.match(board.textContent, /BMW 320i/);
+    assert.match(board.textContent, /2[\s\u00a0]100[\s\u00a0]000|2100000/);
+    assert.match(board.textContent, /Ты:/);
+    board.querySelector("[data-period=all]").click();
+    for (let i = 0; i < 4; i++) await pause();
+    assert.ok(p.requests.some((r) => r.url.includes("period=all")), "фильтр периода не сработал");
+    board.querySelector('[data-category="business"]').click();
+    for (let i = 0; i < 4; i++) await pause();
+    assert.ok(
+      p.requests.some((r) => r.url.includes("category=business")),
+      "фильтр класса не сработал",
+    );
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});
+
+test("guests see the board but the run is not written", async () => {
+  const p = await screen("drive", { game: true, query: "?car=1", role: "guest" });
+  try {
+    const board = p.w.document.getElementById("board-intro");
+    for (let i = 0; i < 4; i++) await pause();
+    assert.match(board.textContent, /Войди в аккаунт/);
+    const g = p.w.DriveGame;
+    g.start();
+    const world = g.state.world;
+    world.time = 120;
+    world.player.score = 200000;
+    p.w.GameCore.finish(world, "wrecked");
+    await g.publishScore(world.result);
+    await pause();
+    assert.match(p.w.document.getElementById("result-rank").textContent, /Войди|место/i);
+  } finally {
+    p.close();
+  }
+});
+
+test("the result screen shows the win or loss clip and the grade ladder", async () => {
+  const p = await screen("drive", {
+    game: true,
+    query: "?car=1",
+    current: rental,
+    role: "user",
+  });
+  try {
+    const d = p.w.document;
+    const g = p.w.DriveGame;
+    g.start();
+    const world = g.state.world;
+    world.time = 300;
+    world.player.score = 2000000;
+    world.player.cash = 900000;
+    world.stats.cashEarned = 1000000;
+    p.w.GameCore.finish(world, "quit");
+    g.showResult("quit");
+    await pause();
+    const gif = d.getElementById("result-gif");
+    assert.equal(gif.getAttribute("src"), "/static/images/smoking.gif");
+    assert.match(d.getElementById("result-grade").textContent, /^S$/);
+    assert.match(
+      d.getElementById("result-score").textContent,
+      /^[\d\s\u00a0]+ очков/,
+      "очки отдельной строкой",
+    );
+    assert.match(d.getElementById("result-meta").textContent, /уровень \d+ из 30/);
+    assert.doesNotMatch(d.getElementById("result-score").textContent, /уровень/);
+    assert.equal(d.querySelectorAll("#result-stars .off").length, 0);
+    world.result.won = false;
+    world.result.stars = 1;
+    world.result.grade = "B";
+    world.result.reason = "wrecked";
+    g.state.mode = "playing";
+    g.showResult("wrecked");
+    assert.equal(gif.getAttribute("src"), "/static/images/fuk.gif");
+    assert.match(d.getElementById("result-stats").textContent, /Облава/);
+    await pause();
+    await pause();
+  } finally {
+    p.close();
+  }
+});
+
+test("music and effects have their own saved volume knobs", async () => {
+  const p = await screen("drive", { game: true, query: "?car=1", current: rental });
+  try {
+    const d = p.w.document;
+    const panel = d.getElementById("drive-volume-panel");
+    const button = d.getElementById("drive-volume");
+    assert.equal(panel.hidden, true, "панель спрятана до нажатия");
+    const musicCalls = () =>
+      p.audioCalls.filter((call) => call[0] === "setVolume" && call[1][0] === "music");
+    assert.equal(musicCalls().length, 1, "ручка применена при старте");
+    assert.equal(musicCalls()[0][1][1], 1);
+    button.click();
+    assert.equal(panel.hidden, false);
+    assert.equal(button.getAttribute("aria-pressed"), "true");
+    const slider = d.getElementById("vol-music");
+    slider.value = "60";
+    slider.dispatchEvent(new p.w.Event("input", { bubbles: true }));
+    assert.equal(d.getElementById("vol-music-value").textContent, "60%");
+    assert.equal(musicCalls().pop()[1][1], 0.6);
+    assert.equal(
+      JSON.parse(p.w.localStorage.getItem("drive.nightshift.volume.v1")).music,
+      0.6,
+    );
+    const sfx = d.getElementById("vol-sfx");
+    sfx.value = "0";
+    sfx.dispatchEvent(new p.w.Event("input", { bubbles: true }));
+    assert.equal(
+      p.audioCalls.filter((call) => call[0] === "setVolume" && call[1][0] === "sfx").pop()[1][1],
+      0,
+    );
+    assert.deepEqual({ ...p.w.DriveGame.state.volume }, { music: 0.6, sfx: 0 });
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});
+
+test("touch actions fire once, capture a drag and suppress text selection menus", async () => {
+  const p = await screen("drive", { game: true, role: "guest", query: "?car=1" });
+  try {
+    const g = p.w.DriveGame;
+    g.start();
+    for (const [id, prop, action] of [["touch-nitro", "touchNitro", "nitro"], ["touch-bribe", "touchBribe", "bribe"]]) {
+      const button = p.w.document.getElementById(id);
+      const captured = [];
+      button.setPointerCapture = (pointerId) => captured.push(pointerId);
+      const down = new p.w.Event("pointerdown", { bubbles: true, cancelable: true });
+      Object.defineProperty(down, "pointerId", { value: 7 });
+      assert.equal(button.dispatchEvent(down), false);
+      assert.deepEqual(captured, [7]);
+      assert.equal(g.state[prop], true);
+      assert.equal(g.input()[action], true);
+      assert.equal(g.input()[action], false, "held button must not repeat an action");
+      button.dispatchEvent(new p.w.Event("pointercancel"));
+      assert.equal(g.state[prop], false);
+      for (const type of ["contextmenu", "selectstart", "dragstart"])
+        assert.equal(button.dispatchEvent(new p.w.Event(type, { cancelable: true })), false);
+    }
+    assert.deepEqual(p.errors, []);
   } finally {
     p.close();
   }
