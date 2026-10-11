@@ -17,7 +17,9 @@
      Ключи принимаются и в snake_case (drone_lock == droneLock). */
   const SAMPLES = {
     go: "audio/mellstroy-poehali.mp3",
-    win: "audio/mellstroy-raduetsa-edited.mp3",
+    nitro: "audio/mellstroy-raduetsa-edited.mp3",
+    encounter: "audio/skolkonahui.mp3",
+    bribe: "audio/schitaet.mp3",
     loseWreck: "audio/mellstroy-stop-stop-stop-stop.mp3",
     defeat: "audio/melstroi-vozmushchaetsia.mp3",
     droneLock: "audio/mellstroy-krik1.mp3",
@@ -643,6 +645,23 @@
       }
       return { peak: +peak.toFixed(3), rms: +Math.sqrt(sum / tapData.length).toFixed(3) };
     },
+    cut(name) {
+      const slot = slotOf(name);
+      const el = slot && samples[slot];
+      if (!el || el.paused) return;
+      const from = el.volume;
+      const steps = 3;
+      let done = 0;
+      const timer = setInterval(() => {
+        done += 1;
+        el.volume = Math.max(0, from * (1 - done / steps));
+        if (done >= steps) {
+          clearInterval(timer);
+          el.pause();
+          el.volume = levels.comment[slot] || LEVELS.comment;
+        }
+      }, 40);
+    },
     levels() {
       return {
         music: Number(trackLevel.toFixed(3)),
@@ -666,6 +685,12 @@
         trackReady: track ? track.readyState : -1,
         levels: api.levels(),
         voices: Object.keys(samples),
+        voiceStates: Object.fromEntries(
+          Object.entries(samples).map(([slot, el]) => [
+            slot,
+            { paused: el.paused, t: Number(el.currentTime.toFixed(2)), vol: Number(el.volume.toFixed(3)) },
+          ]),
+        ),
         loopInfo: {
           on: loopOn,
           active: loopActive,

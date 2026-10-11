@@ -369,6 +369,7 @@
     for (const e of world.events) {
       if (world.attract) continue;
       const sfx = SFX_BY_EVENT[e.type];
+      if (e.type === "bribe" || e.type === "protocol") audio.cut("encounter");
       if (sfx) audio.sfx(sfx);
       if (e.type === "cash") {
         const chip = document.querySelector(".hud-cash");
