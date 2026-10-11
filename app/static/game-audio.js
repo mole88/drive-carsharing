@@ -7,9 +7,14 @@
   const TRACK_FADE_IN = 2600;
   const TRACK_FADE_OUT = 600;
   const TRACK_DUCK = 0.16;
-  /* Присланные эффекты кладутся в app/static/audio/<слот>.mp3 и объявляются здесь,
-     например: knock: "audio/knock.mp3". Пока файла нет — играет синтез. */
-  const SAMPLES = {};
+  /* Присланные эффекты кладутся в app/static/audio/<файл>.mp3 и объявляются здесь
+     ключом = имя слота. Пока файла нет (или строка закомментирована) — играет синтез.
+     Слоты: knock vip cash power nitro siren encounter bribe broke protocol damage
+     graze ram droneLock droneDive droneKill droneMiss spin cone phase shield
+     start win lose cheer. */
+  const SAMPLES = {
+    cheer: "audio/raduetsa.mp3",
+  };
 
   let ctx = null;
   let master = null;
@@ -200,6 +205,11 @@
         tone({ from: freq(s), dur: 0.42, type: "sawtooth", gain: 0.2, filter: "lowpass", cutoff: 900, delay: i * 0.19 }),
       );
     },
+    cheer() {
+      [0, 7, 12, 16, 19].forEach((s, i) =>
+        tone({ from: freq(s + 12), dur: 0.22, type: "square", gain: 0.2, delay: i * 0.07 }),
+      );
+    },
   };
 
   function scheduleMusic() {
@@ -323,7 +333,8 @@
       if (muted) return;
       const file = SAMPLES[name];
       if (file && typeof global.Audio === "function") {
-        if (!samples[name]) samples[name] = new global.Audio(file);
+        const url = file.startsWith("/") ? file : "/static/" + file;
+        if (!samples[name]) samples[name] = new global.Audio(url);
         const el = samples[name];
         try {
           el.currentTime = 0;
@@ -381,6 +392,9 @@
         trackPlaying: track ? !track.paused && !track.ended : false,
         trackTime: track ? Number(track.currentTime.toFixed(1)) : 0,
         trackReady: track ? track.readyState : -1,
+        samples: Object.keys(samples).concat(
+          Object.keys(SAMPLES).filter((k) => !samples[k]),
+        ),
       };
     },
     suspend() {

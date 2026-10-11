@@ -30,6 +30,7 @@
     coachIndex: 0,
     coachTimer: 0,
     ducked: false,
+    lastCheer: -99,
     shownHearts: -1,
     shownHeat: -1,
     record: null,
@@ -46,6 +47,12 @@
 
   const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
   const depth = (y) => 0.8 + 0.36 * clamp(y / W.height, 0, 1);
+  function cheer() {
+    const now = state.world ? state.world.time : 0;
+    if (now - state.lastCheer < 5) return;
+    state.lastCheer = now;
+    audio.sfx("cheer");
+  }
   function worldPop(world, text, x, y, tone, ttl, delay) {
     world.fx.push({
       kind: "pop",
@@ -369,7 +376,7 @@
         state.hitStop = e.vip ? 0.07 : 0.045;
         if (!state.calm)
           state.shake = Math.min(26, state.shake + (e.vip ? 16 : 9));
-        if (e.combo >= 5 && e.combo % 5 === 0) audio.sfx("vip");
+        if (e.combo >= 5 && e.combo % 5 === 0) cheer();
       }
       if (e.type === "damage" || e.type === "ram") {
         state.flash = 0.32;
@@ -637,7 +644,7 @@
       document.querySelector(".hud-score").classList.add("beat");
       $("hud-record").textContent = "рекорд побит!";
       worldPop(world, "НОВЫЙ РЕКОРД!", W.width / 2, 430, "gold", 1.6);
-      audio.sfx("vip");
+      cheer();
     }
     $("hud-cash").textContent = money(p.cash);
     $("hud-rent").textContent = money(world.stats.rentalCost);
@@ -795,6 +802,7 @@
     );
     worldPop(state.world, "ПОЕХАЛИ!", p.x, p.y - 230, "combo", 1.1, 1.25);
     state.finalCall = false;
+    state.lastCheer = -99;
     const best = records().cars["car" + state.world.car.id];
     state.recordScore = best ? best.best : 0;
     state.recordBeaten = false;
@@ -904,6 +912,7 @@
       note.push("Взятка дешевле ремонта: копи купюры и жми ПРОБЕЛ.");
     $("result-note").textContent = note.join(" ");
     audio.sfx(result.won ? "win" : "lose");
+    if (result.won) audio.sfx("cheer");
     setMode("result");
   }
 

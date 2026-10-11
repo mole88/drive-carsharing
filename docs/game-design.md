@@ -136,13 +136,14 @@ Solaris — голубой кузов с жёлтыми деталями; Octavi
 «контакта» с патрулём приглушается до 0.16, чтобы prompt читался громче эффектов.
 Кнопка «Звук» и `M` глушат и трек, и синтез.
 
-Эффекты синтезируются WebAudio. Присланные файлы подключаются одной строкой в
-`SAMPLES` внутри `game-audio.js`: положить `app/static/audio/<слот>.mp3` и добавить
-`knock: "audio/knock.mp3"`. Slots: `knock`, `knock_vip`, `combo_5`, `cash`,
-`bribe_ok`, `bribe_fail`, `protocol`, `siren`, `encounter`, `cop_ram`, `drone_lock`,
-`drone_dive`, `drone_kill`, `drone_miss`, `damage`, `graze`, `cone`, `oil_spin`,
-`nitro_start`, `nitro_end`, `power`, `phase_change`, `record_beat`, `countdown`,
-`go`, `win_shift`, `lose_wreck`, `ui_click`. Чего нет — играет синтез.
+Эффекты синтезируются WebAudio. Присланный файл подключается двумя действиями:
+положить `app/static/audio/<файл>.mp3` и добавить в `SAMPLES` внутри `game-audio.js`
+строку `<слот>: "audio/<файл>.mp3"`. Слоты: `knock`, `vip`, `cash`, `power`, `nitro`,
+`siren`, `encounter`, `bribe`, `broke`, `protocol`, `damage`, `graze`, `ram`,
+`droneLock`, `droneDive`, `droneKill`, `droneMiss`, `spin`, `cone`, `phase`, `shield`,
+`start`, `win`, `lose`, `cheer`. Чего нет — играет синтез. Сейчас занят `cheer`
+(`raduetsa.mp3`): комбо-кратное пяти, побитый рекорд и прибыльная смена, с паузой 5 с,
+чтобы голос не накладывался.
 
 ## Структура кода
 
