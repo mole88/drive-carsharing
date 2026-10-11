@@ -1,4 +1,4 @@
-/* Canvas-графика: окружение рисуется кодом, персонажи — прозрачными PNG-спрайтами. */
+/* Canvas-графика: окружение и эффекты — код, игровые объекты — прозрачные спрайты. */
 (function (global) {
   "use strict";
 
@@ -38,6 +38,29 @@
   const spriteBase = artScriptUrl
     ? new URL("images/sprites/nightlife/", artScriptUrl).href
     : "/static/images/sprites/nightlife/";
+  const objectBase = artScriptUrl
+    ? new URL("images/sprites/", artScriptUrl).href
+    : "/static/images/sprites/";
+  const objectImages = Object.create(null);
+  const ready = (image) => image && image.complete && image.naturalWidth;
+  // Only download the selected car and objects encountered in this run.
+  function objectImage(file) {
+    if (!(file in objectImages)) {
+      const image =
+        typeof global.Image === "function" ? new global.Image() : null;
+      objectImages[file] = image;
+      if (image) {
+        const version = artScriptUrl ? artScriptUrl.search : "";
+        image.decoding = "async";
+        image.onerror = () => {
+          image.onerror = null;
+          image.src = objectBase + file + ".png" + version;
+        };
+        image.src = objectBase + file + ".webp" + version;
+      }
+    }
+    return objectImages[file];
+  }
   function loadTargetImage(file) {
     if (typeof global.Image !== "function") return null;
     const image = new global.Image();
@@ -152,6 +175,29 @@
     ctx.closePath();
   }
 
+  function carShield(ctx, o, w, h) {
+    if (!o.shield) return;
+    ctx.strokeStyle = "#7fe3d8";
+    ctx.lineWidth = 5;
+    ctx.globalAlpha = 0.75 + Math.sin((o.time || 0) * 6) * 0.2;
+    ctx.beginPath();
+    ctx.ellipse(0, 0, w * 0.66, h * 0.62, 0, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+  }
+
+  function spritePlate(ctx, o, w, h, skin) {
+    const text = String(o.plate || "ДРАЙВ").slice(0, 10);
+    ctx.fillStyle = INK;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.font = "700 7px system-ui, sans-serif";
+    const measured = ctx.measureText(text).width;
+    const size = Math.min(7, (7 * w * 0.27) / Math.max(1, measured));
+    ctx.font = `700 ${size}px system-ui, sans-serif`;
+    ctx.fillText(text, 0, h * (skin === "rio" ? 0.293 : 0.3));
+  }
+
   /* Машина игрока: вид сзади-сверху, 3/4. */
   function playerCar(ctx, o) {
     const w = o.width,
@@ -188,6 +234,17 @@
         ctx.fill();
         ctx.restore();
       }
+    }
+
+    const model =
+      { economy: "rio", comfort: "octavia", business: "bmw" }[skin] || skin;
+    const image = objectImage("vehicles/" + model);
+    if (ready(image)) {
+      ctx.drawImage(image, -w * 0.56, -h * 0.51, w * 1.12, h * 1.02);
+      spritePlate(ctx, o, w, h, model);
+      carShield(ctx, o, w, h);
+      ctx.restore();
+      return;
     }
 
     ctxLine(ctx, 6);
@@ -350,15 +407,7 @@
     ctx.font = `700 ${plateSize}px system-ui, sans-serif`;
     ctx.fillText(plateText, 0, plateBox.y + plateBox.h / 2);
 
-    if (o.shield) {
-      ctx.strokeStyle = "#7fe3d8";
-      ctx.lineWidth = 5;
-      ctx.globalAlpha = 0.75 + Math.sin((o.time || 0) * 6) * 0.2;
-      ctx.beginPath();
-      ctx.ellipse(0, 0, w * 0.66, h * 0.62, 0, 0, Math.PI * 2);
-      ctx.stroke();
-      ctx.globalAlpha = 1;
-    }
+    carShield(ctx, o, w, h);
     ctx.restore();
   }
 
@@ -614,6 +663,48 @@
     ctx.scale(o.scale || 1, o.scale || 1);
     ctx.globalAlpha = c.alpha === undefined ? 1 : c.alpha;
     shadow(ctx, 0, h * 0.44, w * 0.5, h * 0.11, 0.3);
+    const image = objectImage("vehicles/police");
+    if (ready(image)) {
+      ctx.drawImage(image, -w * 0.56, -h * 0.51, w * 1.12, h * 1.02);
+      const base = c.alpha === undefined ? 1 : c.alpha;
+      const red = Math.sin((o.time || 0) * 12) > 0;
+      for (const [sx, color, active] of [
+        [-1, "#4fa3ff", !red],
+        [1, "#ff4444", red],
+      ]) {
+        ctx.globalAlpha = base * (active ? 0.9 : 0.1);
+        ctx.fillStyle = color;
+        roundRect(
+          ctx,
+          sx * w * 0.165 - w * 0.075,
+          -h * 0.35,
+          w * 0.15,
+          h * 0.043,
+          3,
+        );
+        ctx.fill();
+      }
+      if (o.beam) {
+        ctx.globalAlpha = base * 0.12;
+        ctx.fillStyle = "#c5e4ff";
+        ctx.beginPath();
+        ctx.moveTo(-w * 0.3, h * 0.28);
+        ctx.lineTo(-w * 0.9, h * 1.1);
+        ctx.lineTo(w * 0.9, h * 1.1);
+        ctx.lineTo(w * 0.3, h * 0.28);
+        ctx.closePath();
+        ctx.fill();
+      }
+      if (c.flash > 0) {
+        ctx.globalAlpha = base * Math.min(1, c.flash * 2);
+        ctx.fillStyle = "#fff6d8";
+        ctx.beginPath();
+        ctx.arc(0, 0, w * 0.7, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.restore();
+      return;
+    }
     ctxLine(ctx, 6);
 
     ctx.fillStyle = "#1c2a26";
@@ -781,6 +872,40 @@
     ctx.scale(s, s);
     ctx.globalAlpha = d.alpha === undefined ? 1 : d.alpha;
     if (d.state !== "crash") shadow(ctx, 0, 78, 34, 9, 0.2);
+    const image = objectImage("drones/mavic");
+    if (ready(image)) {
+      const base = d.alpha === undefined ? 1 : d.alpha;
+      ctx.drawImage(image, -76, -45, 152, 90);
+      // Blurred rotors keep moving during flight, and stop once the drone crashes.
+      if (d.state !== "crash") {
+        ctx.globalAlpha = base * 0.2;
+        ctx.strokeStyle = "#d1e7ee";
+        ctx.lineWidth = 2;
+        for (const [x, y] of [
+          [-42, -30],
+          [42, -30],
+          [-48, 20],
+          [48, 20],
+        ]) {
+          ctx.save();
+          ctx.translate(x, y);
+          ctx.scale(1, 0.45);
+          ctx.rotate((d.rotor || 0) + x);
+          ctx.beginPath();
+          ctx.ellipse(0, 0, 21, 8, 0, 0, Math.PI * 2);
+          ctx.stroke();
+          ctx.restore();
+        }
+      }
+      ctx.globalAlpha = base * 0.85;
+      ctx.fillStyle =
+        d.state === "lock" || d.state === "dive" ? "#ff4d4d" : "#7fe3d8";
+      ctx.beginPath();
+      ctx.arc(0, 27, 3, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+      return;
+    }
     ctxLine(ctx, 5);
 
     const arm = 46;
@@ -907,6 +1032,15 @@
     if (q.kind === "cash") {
       ctx.rotate(Math.sin((q.bob || 0) * 0.6) * 0.18);
       const note = q.value / 100;
+      const image = [100, 200, 500, 1000, 2000, 5000].includes(note)
+        ? objectImage("cash/rub-" + note)
+        : null;
+      if (ready(image)) {
+        const height = (76 * image.naturalHeight) / image.naturalWidth;
+        ctx.drawImage(image, -38, -height / 2, 76, height);
+        ctx.restore();
+        return;
+      }
       ctx.fillStyle =
         {
           100: "#ccad7c",

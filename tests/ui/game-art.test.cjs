@@ -3,7 +3,11 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const vm = require("node:vm");
 
-function renderer({ loading = false } = {}) {
+function renderer({
+  loading = false,
+  objectLoading = false,
+  noImage = false,
+} = {}) {
   const images = [];
   class Image {
     constructor() {
@@ -12,13 +16,24 @@ function renderer({ loading = false } = {}) {
     set src(value) {
       this.url = value;
       const atlas = value.includes("-walk.webp");
-      this.complete = !(atlas && loading);
-      this.naturalWidth = this.complete ? 1024 : 0;
-      this.naturalHeight = this.complete ? (atlas ? 768 : 1536) : 0;
+      this.complete =
+        !(atlas && loading) &&
+        !(!atlas && objectLoading && value.endsWith(".webp?v=assets"));
+      const portrait = value.includes("/nightlife/") && !atlas;
+      this.naturalWidth = this.complete ? (atlas || portrait ? 1024 : 384) : 0;
+      this.naturalHeight = this.complete
+        ? atlas
+          ? 768
+          : portrait
+            ? 1536
+            : value.includes("/cash/")
+              ? 150
+              : 512
+        : 0;
     }
   }
   const global = {
-    Image,
+    Image: noImage ? undefined : Image,
     URL,
     document: {
       currentScript: {
@@ -29,7 +44,9 @@ function renderer({ loading = false } = {}) {
   vm.runInNewContext(fs.readFileSync("app/static/game-art.js", "utf8"), global);
   const draws = [],
     scales = [],
-    stack = [];
+    stack = [],
+    texts = [],
+    rotations = [];
   const ctx = new Proxy(
     {
       globalAlpha: 1,
@@ -44,6 +61,18 @@ function renderer({ loading = false } = {}) {
       },
       drawImage(...args) {
         draws.push({ args, alpha: this.globalAlpha });
+      },
+      fillText(...args) {
+        texts.push(args);
+      },
+      measureText(text) {
+        return { width: text.length * 4 };
+      },
+      createLinearGradient() {
+        return { addColorStop() {} };
+      },
+      rotate(value) {
+        rotations.push(value);
       },
     },
     { get: (object, key) => (key in object ? object[key] : () => {}) },
@@ -66,7 +95,17 @@ function renderer({ loading = false } = {}) {
       },
       { scale: 1, time: 0 },
     );
-  return { target, images, draws, scales, stack };
+  return {
+    target,
+    images,
+    draws,
+    scales,
+    stack,
+    texts,
+    rotations,
+    art: global.GameArt,
+    ctx,
+  };
 }
 
 test("a full gait uses eight distinct cells, including the second atlas row", () => {
@@ -157,4 +196,120 @@ test("loading uses the procedural fallback; a failed atlas loads its original PN
   assert.equal(r.draws[0].args[3], 1024);
   assert.equal(r.draws[0].args[4], 1536);
   assert.equal(r.stack.length, 0);
+});
+
+const car = {
+  x: 100,
+  y: 200,
+  width: 103,
+  height: 157,
+  color: "#eee",
+  plate: "А123ВС34",
+};
+const drone = {
+  x: 300,
+  y: 100,
+  state: "lock",
+  rotor: 10,
+  spin: 2,
+  alpha: 0.4,
+  scale: 0.9,
+};
+
+test("car models load on demand with the rental plate and effects intact", () => {
+  const r = renderer();
+  assert.equal(r.images.length, 4);
+  for (const skin of ["rio", "solaris", "octavia", "bmw"]) {
+    r.art.playerCar(r.ctx, {
+      ...car,
+      skin,
+      nitro: true,
+      shield: true,
+      tilt: 0.15,
+    });
+    assert.ok(
+      r.draws.at(-1).args[0].url.endsWith(`/vehicles/${skin}.webp?v=assets`),
+    );
+    assert.ok(fs.existsSync(`app/static/images/sprites/vehicles/${skin}.webp`));
+    assert.equal(r.texts.at(-1)[0], car.plate);
+  }
+  const count = r.images.length;
+  r.art.playerCar(r.ctx, { ...car, skin: "economy" });
+  assert.equal(r.images.length, count, "the same model reuses its image");
+  assert.ok(r.rotations.includes(0.15));
+  assert.equal(r.stack.length, 0);
+  assert.equal(r.ctx.globalAlpha, 1);
+});
+
+test("police and drone keep fading, rotation and scale; crashed rotors stop", () => {
+  const r = renderer();
+  r.art.policeCar(
+    r.ctx,
+    { ...car, alpha: 0.3, spin: 1, flash: 0.1 },
+    { scale: 0.8, time: 2, beam: true },
+  );
+  assert.equal(r.draws.at(-1).alpha, 0.3);
+  assert.ok(r.draws.at(-1).args[0].url.includes("vehicles/police.webp"));
+  assert.ok(r.rotations.includes(1));
+  r.art.drone(r.ctx, drone, { scale: 0.8 });
+  assert.equal(r.draws.at(-1).alpha, 0.4);
+  assert.ok(r.draws.at(-1).args[0].url.includes("drones/mavic.webp"));
+  assert.ok(r.scales.some(([x]) => Math.abs(x - 0.72) < 0.0001));
+  const turns = r.rotations.length;
+  r.art.drone(r.ctx, { ...drone, state: "crash", alpha: 0 }, {});
+  assert.equal(r.rotations.length, turns + 1, "only the crashed body rotates");
+  assert.equal(r.draws.at(-1).alpha, 0);
+  assert.equal(r.stack.length, 0);
+  assert.equal(r.ctx.globalAlpha, 1);
+});
+
+test("all six ruble notes match their kopeck value and preserve pickup fading", () => {
+  const r = renderer();
+  for (const note of [100, 200, 500, 1000, 2000, 5000]) {
+    const pickup = {
+      kind: "cash",
+      value: note * 100,
+      x: 200,
+      y: 300,
+      bob: 1,
+      life: 0.5,
+    };
+    const before = { ...pickup };
+    r.art.pickup(r.ctx, pickup, {});
+    assert.deepEqual(pickup, before);
+    assert.ok(
+      r.draws.at(-1).args[0].url.endsWith(`/cash/rub-${note}.webp?v=assets`),
+    );
+    assert.equal(r.draws.at(-1).alpha, 0.5);
+    assert.ok(fs.existsSync(`app/static/images/sprites/cash/rub-${note}.webp`));
+  }
+  assert.equal(r.stack.length, 0);
+  assert.ok(fs.existsSync("app/static/images/sprites/items/jagermeister.webp"));
+  assert.ok(
+    r.images.every((image) => !image.url.includes("jagermeister")),
+    "future bottle is not downloaded",
+  );
+});
+
+test("object loading has a procedural fallback and a single PNG retry", () => {
+  const r = renderer({ objectLoading: true });
+  r.art.playerCar(r.ctx, car);
+  r.art.policeCar(r.ctx, car, {});
+  r.art.drone(r.ctx, drone, {});
+  r.art.pickup(r.ctx, { kind: "cash", value: 10000, x: 0, y: 0, life: 5 }, {});
+  assert.equal(r.draws.length, 0);
+  const image = r.images.find((image) =>
+    image.url.includes("vehicles/octavia"),
+  );
+  image.onerror();
+  assert.equal(image.onerror, null);
+  assert.ok(image.url.endsWith("vehicles/octavia.png?v=assets"));
+  r.art.playerCar(r.ctx, car);
+  assert.equal(r.draws.length, 1);
+  assert.equal(r.stack.length, 0);
+  const headless = renderer({ noImage: true });
+  headless.art.playerCar(headless.ctx, car);
+  headless.art.drone(headless.ctx, drone, {});
+  assert.equal(headless.draws.length, 0);
+  assert.equal(headless.stack.length, 0);
 });
