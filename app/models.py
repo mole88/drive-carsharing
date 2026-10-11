@@ -1,6 +1,6 @@
 from datetime import UTC, datetime
 
-from sqlalchemy import CheckConstraint, ForeignKey, Index, String, text
+from sqlalchemy import JSON, CheckConstraint, ForeignKey, Index, String, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.db import Base
@@ -70,6 +70,7 @@ class Rental(Base):
     plate_snapshot: Mapped[str] = mapped_column(String(20), default="")
     pickup_address: Mapped[str] = mapped_column(String(200), default="")
     finish_address: Mapped[str | None] = mapped_column(String(200))
+    game_result: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
 
 class LoginSession(Base):
@@ -123,6 +124,7 @@ class GameScore(Base):
     )
     id: Mapped[int] = mapped_column(primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    rental_id: Mapped[int | None] = mapped_column(ForeignKey("rentals.id"), nullable=True)
     week: Mapped[str] = mapped_column(String(9), default="")
     car_id: Mapped[int | None] = mapped_column(ForeignKey("cars.id"))
     car_name: Mapped[str] = mapped_column(String(125), default="")

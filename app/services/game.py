@@ -7,10 +7,11 @@
 
 from fastapi import HTTPException
 from sqlalchemy import func, select
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
-from app.models import Car, GameScore, User, utcnow
+from app.models import GameScore, Rental, User, utcnow
 
 LEVEL_SECONDS = 22
 MAX_LEVEL = 30
@@ -18,6 +19,7 @@ LEVEL_SLACK = 2
 SCORE_SLACK = 9000
 KNOCK_SLACK = 12
 RESULT_FIELDS = (
+    "rental_id",
     "car_id",
     "car_name",
     "category",
@@ -42,7 +44,7 @@ def check(data):
     ceiling = min(MAX_LEVEL, 1 + data.duration_seconds // LEVEL_SECONDS + LEVEL_SLACK)
     if data.level > ceiling:
         raise HTTPException(422, "Уровень не совпадает с длительностью заезда")
-    if data.score > data.duration_seconds * SCORE_SLACK:
+    if data.score > max(1, data.duration_seconds) * SCORE_SLACK:
         raise HTTPException(422, "Слишком много очков для такой поездки")
     if data.knockdowns > data.duration_seconds * KNOCK_SLACK:
         raise HTTPException(422, "Слишком много сбитых для такой поездки")
@@ -52,53 +54,41 @@ def stored(db: Session, user_id: int, week: str):
     return db.scalar(select(GameScore).where(GameScore.user_id == user_id, GameScore.week == week))
 
 
+def record(db: Session, rental: Rental):
+    """Atomic best-of-week update inside the rental completion transaction."""
+    result = rental.game_result
+    values = {field: result[field] for field in RESULT_FIELDS}
+    values.update(user_id=rental.user_id, week=result["week"], updated_at=utcnow())
+    insert = {"sqlite": sqlite_insert, "postgresql": pg_insert}[db.get_bind().dialect.name]
+    statement = insert(GameScore).values(created_at=utcnow(), **values)
+    statement = statement.on_conflict_do_update(
+        index_elements=[GameScore.user_id, GameScore.week],
+        set_={key: value for key, value in values.items() if key not in {"user_id", "week"}},
+        where=GameScore.score < result["score"],
+    ).returning(GameScore.id)
+    improved = db.execute(statement).scalar() is not None
+    row = db.scalar(
+        select(GameScore)
+        .where(GameScore.user_id == rental.user_id, GameScore.week == result["week"])
+        .execution_options(populate_existing=True)
+    )
+    return row, improved
+
+
 def submit(db: Session, user: User, data):
-    """Оставляет лучший заезд недели; гонку двух вкладок переживает одна запись."""
-    check(data)
-    week = week_of()
-    car_name = data.car_name.strip()[:125] or "Демо «Драйв Ночной»"
-    category = data.category
-    if data.car_id:
-        car = db.get(Car, data.car_id)
-        if not car:
-            raise HTTPException(404, "Машина не найдена")
-        car_name = f"{car.brand} {car.model}"[:125]
-        category = car.category
-    values = {
-        "score": data.score,
-        "car_id": data.car_id,
-        "car_name": car_name,
-        "category": category,
-        "level": data.level,
-        "knockdowns": data.knockdowns,
-        "drones": data.drones,
-        "bribes": data.bribes,
-        "profit_kopecks": data.profit_kopecks,
-        "duration_seconds": data.duration_seconds,
-        "reason": data.reason,
-        "updated_at": utcnow(),
-    }
-    for attempt in range(2):
-        row = stored(db, user.id, week)
-        if row and row.score >= data.score:
-            db.rollback()
-            return row, False
-        if row:
-            for field, value in values.items():
-                setattr(row, field, value)
-        else:
-            db.add(GameScore(user_id=user.id, week=week, created_at=utcnow(), **values))
-        try:
-            db.commit()
-        except IntegrityError as error:
-            db.rollback()
-            if attempt:
-                raise HTTPException(
-                    409, "Не удалось записать результат, попробуйте ещё раз"
-                ) from error
-            continue
-        saved = stored(db, user.id, week)
-        return saved, saved.score == data.score
+    """Only completed, owned rental outcomes can enter the leaderboard."""
+    if not data.rental_id:
+        raise HTTPException(422, "Результат должен быть связан с поездкой")
+    rental = db.get(Rental, data.rental_id)
+    if not rental or rental.user_id != user.id:
+        raise HTTPException(404, "Поездка не найдена")
+    if rental.status != "completed" or not rental.game_result:
+        raise HTTPException(409, "Поездка ещё не завершена в игре")
+    if rental.game_result["duration_seconds"] < 10 or rental.game_result["score"] <= 0:
+        raise HTTPException(422, "Для рейтинга нужен заезд от 10 секунд с очками")
+    row, improved = record(db, rental)
+    db.commit()
+    return row, improved
 
 
 def filters(week=None, category=None):

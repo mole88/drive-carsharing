@@ -6,6 +6,7 @@ const protectedScreen = [
   "profile",
   "admin",
   "admin-fleet",
+  "drive",
 ].includes(screen);
 function goLogin() {
   location.assign(
@@ -14,6 +15,7 @@ function goLogin() {
 }
 function loginDestination() {
   const next = new URLSearchParams(location.search).get("next");
+  if (next && /^\/drive(?:\?rental=\d+)?$/.test(next)) return next;
   return [
     "/cars",
     "/trips",
@@ -120,8 +122,8 @@ function rememberCar(car) {
     void error;
   }
 }
-function driveHref(carId) {
-  return "/drive?car=" + carId;
+function driveHref(rentalId) {
+  return "/drive?rental=" + rentalId;
 }
 async function refresh() {
   const sequence = ++refreshSequence;
@@ -187,14 +189,8 @@ async function refresh() {
           data-reserve="${c.id}"
           ${c.status !== "available" || c.fuel < 10 ? "disabled" : ""}
         >
-          ${user ? "Забронировать" : "Войти и забронировать"}
+          ${user ? "Поехать" : "Войти и поехать"}
         </button>
-
-        ${
-          screen === "admin-fleet"
-            ? ""
-            : `<button class="drive-cta" data-drive="${c.id}">Ночная смена · мини-игра</button>`
-        }
 
         ${
           screen === "admin-fleet" &&
@@ -237,7 +233,7 @@ async function refresh() {
       trips
         .map(
           (r) =>
-            `<article class="trip"><div><strong>${escape(r.car_name)} · ${escape(r.plate)}</strong><p>№${r.id} · ${new Date(r.created_at).toLocaleString("ru-RU")}<br>${labels[r.status]} · ${money(r.rate_kopecks)}/мин${r.status === "completed" ? " · Итого " + money(r.total_kopecks) : ""}</p></div><div class="actions">${r.status === "reserved" ? `<button class="primary" data-action="start" data-id="${r.id}">Начать поездку</button><button data-action="cancel" data-id="${r.id}">Отменить бронь</button>` : ""}${r.status === "completed" ? `<a class="receipt-link" href="/api/rentals/${r.id}/receipt" target="_blank" rel="noopener">Итоги поездки ↗</a>` : ""}${r.status === "active" ? `<button class="primary" data-action="finish" data-id="${r.id}">Завершить</button>` : ""}</div></article>`,
+            `<article class="trip"><div><strong>${escape(r.car_name)} · ${escape(r.plate)}</strong><p>№${r.id} · ${new Date(r.created_at).toLocaleString("ru-RU")}<br>${labels[r.status]} · ${money(r.rate_kopecks)}/мин${r.status === "completed" ? " · Итого " + money(r.total_kopecks) : ""}${r.game_result ? `<br>${r.game_result.score.toLocaleString("ru-RU")} очков · ${r.game_result.duration_seconds} с · уровень ${r.game_result.level}` : ""}</p></div><div class="actions">${r.status === "reserved" ? `<button class="primary" data-action="start" data-id="${r.id}">Начать поездку</button><button data-action="cancel" data-id="${r.id}">Отменить бронь</button>` : ""}${r.status === "completed" ? `<a class="receipt-link" href="/api/rentals/${r.id}/receipt" target="_blank" rel="noopener">Итоги ↗</a>` : ""}${r.status === "active" ? `<a class="primary receipt-link" href="${driveHref(r.id)}">Продолжить поездку</a>` : ""}</div></article>`,
         )
         .join("") || "<p>Пока нет поездок. Выберите автомобиль в каталоге.</p>";
   }
@@ -342,11 +338,6 @@ document.addEventListener("click", async (e) => {
   const b = e.target.closest("button");
   if (!b) return;
   try {
-    if (b.dataset.drive) {
-      rememberCar(currentCars.find((c) => c.id === Number(b.dataset.drive)));
-      location.assign(driveHref(b.dataset.drive));
-      return;
-    }
     if (b.dataset.reserve) {
       if (!user) {
         goLogin();
@@ -361,7 +352,6 @@ document.addEventListener("click", async (e) => {
       $("reserve-rate").textContent =
         money(selectedCar.rate_kopecks) + " / мин";
       rememberCar(selectedCar);
-      if ($("reserve-drive")) $("reserve-drive").href = driveHref(selectedCar.id);
       $("reserve-form").querySelector(".form-status").textContent = "";
       $("reserve-dialog").showModal();
     }
@@ -379,6 +369,10 @@ document.addEventListener("click", async (e) => {
       await api(`/rentals/${b.dataset.id}/${b.dataset.action}`, {
         method: "POST",
       });
+      if (b.dataset.action === "start") {
+        location.assign(driveHref(b.dataset.id));
+        return;
+      }
       await refresh();
       message(
         b.dataset.action === "start"
@@ -457,11 +451,15 @@ function renderActive() {
     return;
   }
   const reserved = trip.status === "reserved";
+  if (!reserved) {
+    $("active-trip").innerHTML = `<div><p class="eyebrow">ПОЕЗДКА</p><h2>${escape(trip.car_name)}</h2><div class="actions"><a class="primary receipt-link" href="${driveHref(trip.id)}">Продолжить поездку</a></div></div>`;
+    return;
+  }
   const key = trip.id + ":" + trip.status;
   if (activeMarkupKey !== key) {
     activeMarkupKey = key;
     $("active-trip").innerHTML =
-      `<div><p class="eyebrow">${reserved ? "ВАША БРОНЬ" : "ПОЕЗДКА ИДЁТ"}</p><h2>${escape(trip.car_name)}</h2><p>${escape(trip.plate)} · ${escape(trip.address)}</p><p id="live-price"></p><div class="actions">${reserved ? `<button class="primary" data-action="start" data-id="${trip.id}">Начать поездку</button><button data-action="cancel" data-id="${trip.id}">Отменить бронь</button>` : `<button class="primary" data-action="finish" data-id="${trip.id}">Завершить</button>`}<a class="drive-cta" href="${driveHref(trip.car_id)}">Ночная смена · мини-игра</a></div></div><div class="timer"><strong id="live-time"></strong><span>${reserved ? "осталось до отмены" : "в пути"}</span></div>`;
+      `<div><p class="eyebrow">ВАША БРОНЬ</p><h2>${escape(trip.car_name)}</h2><p>${escape(trip.plate)} · ${escape(trip.address)}</p><p id="live-price"></p><div class="actions"><button class="primary" data-action="start" data-id="${trip.id}">Начать поездку</button><button data-action="cancel" data-id="${trip.id}">Отменить бронь</button></div></div><div class="timer"><strong id="live-time"></strong><span>осталось до отмены</span></div>`;
   }
   const now =
     Date.parse(trip.server_now) + (performance.now() - activeReceivedAt);
@@ -557,17 +555,17 @@ if ($("reserve-form"))
     button.disabled = true;
     status.textContent = "Бронируем…";
     try {
-      await api("/rentals", {
+      const reservation = await api("/rentals", {
         method: "POST",
         body: JSON.stringify({
           car_id: selectedCar.id,
           expected_rate_kopecks: selectedCar.rate_kopecks,
         }),
       });
+      await api(`/rentals/${reservation.id}/start`, { method: "POST" });
       $("reserve-dialog").close();
       historyPage = 0;
-      await refresh();
-      location.assign("/trips");
+      location.assign(driveHref(reservation.id));
     } catch (e) {
       status.textContent = e.message;
     } finally {

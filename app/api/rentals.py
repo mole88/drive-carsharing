@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from app.core.db import get_db
 from app.core.security import current_user
 from app.models import Rental, User
-from app.schemas import FinishInput, RentalOut, ReserveInput
+from app.schemas import FinishInput, GameFinishInput, RentalOut, ReserveInput
 from app.services import rentals
 from app.services.rentals import expire_reservations, rental_view
 
@@ -103,7 +103,32 @@ def receipt(rental_id: int, user: User = Depends(current_user), db: Session = De
         ("Оплачиваемое время", f"{minutes} мин"),
         ("Тариф", f"{rental.rate_kopecks / 100:.2f} ₽/мин"),
     ]
+    if rental.game_result:
+        result = rental.game_result
+        rows.extend([
+            ("Очки", str(result["score"])),
+            ("Уровень", str(result["level"])),
+            ("За рулём", f'{result["duration_seconds"]} с'),
+            ("Итог игры", {"wrecked": "Авария", "broke": "Долг", "quit": "Возврат машины"}[result["reason"]]),
+        ])
     body = "".join(f"<dt>{escape(label)}</dt><dd>{escape(value)}</dd>" for label, value in rows)
     return HTMLResponse(
         f'<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Итоги поездки №{rental.id} — Драйв</title><link rel="stylesheet" href="/static/receipt.css"></head><body><main><a href="/trips">← Мои поездки</a><p class="brand">драйв ↗</p><h1>Итоги поездки №{rental.id}</h1><dl>{body}</dl><div class="total">Стоимость <strong>{rental.total_kopecks / 100:.2f} ₽</strong></div><p>Каждая начатая минута округляется вверх. Минимум — одна минута.</p><p>Расчёт стоимости поездки. Не является кассовым чеком или подтверждением оплаты.</p><button id="print">Распечатать / сохранить PDF</button></main><script src="/static/receipt.js"></script></body></html>'
     )
+
+
+@router.get("/{rental_id}", response_model=RentalOut)
+def get_rental(rental_id: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    expire_reservations(db)
+    rental = db.get(Rental, rental_id)
+    if not rental or rental.user_id != user.id:
+        raise HTTPException(404, "Поездка не найдена")
+    return rental_view(db, rental)
+
+
+@router.post("/{rental_id}/game/finish", response_model=RentalOut)
+def finish_game(
+    rental_id: int, data: GameFinishInput,
+    user: User = Depends(current_user), db: Session = Depends(get_db),
+):
+    return rental_view(db, rentals.finish_game(db, user.id, rental_id, data))

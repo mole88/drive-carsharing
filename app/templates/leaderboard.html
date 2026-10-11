@@ -1,0 +1,15 @@
+<section class="leaderboard-page" id="leaderboard">
+  <div class="section-head"><h1>Лидерборд</h1><a class="primary link" href="/cars">Поехать</a></div>
+  <div class="leader-filters" aria-label="Фильтры рейтинга">
+    <div class="board-filters" aria-label="Период">
+      <button type="button" data-period="week" aria-pressed="true">Неделя</button>
+      <button type="button" data-period="all" aria-pressed="false">Всё время</button>
+    </div>
+    <label>Класс <select id="leader-category"><option value="">Все</option><option value="economy">Эконом</option><option value="comfort">Комфорт</option><option value="business">Бизнес</option></select></label>
+  </div>
+  <div id="leader-personal" class="leader-personal" hidden></div>
+  <div id="leader-content" aria-live="polite" aria-busy="true"></div>
+  <div class="leader-pager actions">
+    <button id="leader-prev" type="button" disabled>Назад</button><span id="leader-page">1</span><button id="leader-next" type="button" disabled>Далее</button>
+  </div>
+</section>

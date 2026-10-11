@@ -22,7 +22,8 @@ asset_version = sha256(
 PAGES = {
     "/": ("home", "Каршеринг в Санкт-Петербурге", False),
     "/cars": ("cars", "Автомобили", False),
-    "/drive": ("drive", "Ночная смена · мини-игра", False),
+    "/drive": ("drive", "Поездка", True),
+    "/leaderboard": ("leaderboard", "Лидерборд", False),
     "/login": ("login", "Вход и регистрация", False),
     "/how-it-works": ("how-it-works", "Как это работает", False),
     "/trips": ("trips", "Мои поездки", True),
@@ -42,7 +43,7 @@ def page(request: Request, db: Session = Depends(get_db)):
             if error.status_code != 401:
                 raise
             return RedirectResponse(
-                "/login?next=" + quote(request.url.path, safe=""), status_code=303
+                "/login?next=" + quote(request.url.path + ("?" + request.url.query if request.url.query else ""), safe=""), status_code=303
             )
         if name.startswith("admin") and not user.is_admin:
             return HTMLResponse(
@@ -64,9 +65,11 @@ def page(request: Request, db: Session = Depends(get_db)):
             f'<script src="/static/{file}?v={asset_version}" defer></script>'
             for file in ("game-core.js", "game-art.js", "game-audio.js", "game.js")
         )
+    if name == "leaderboard":
+        scripts = f'<script src="/static/leaderboard.js?v={asset_version}" defer></script>'
     styles = (
         f'<link rel="stylesheet" href="/static/game.css?v={asset_version}" />'
-        if name == "drive"
+        if name in {"drive", "leaderboard"}
         else ""
     )
     html = (templates / "base.html").read_text(encoding="utf-8")

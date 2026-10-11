@@ -72,6 +72,7 @@ class RentalOut(BaseModel):
     server_now: datetime
     pickup_address: str
     finish_address: str | None
+    game_result: dict | None = None
 
     @field_serializer("created_at", "started_at", "finished_at", "expires_at", "server_now")
     def serialize_utc(self, value):
@@ -80,6 +81,7 @@ class RentalOut(BaseModel):
 
 class ScoreInput(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
+    rental_id: int | None = Field(default=None, gt=0)
     car_id: int | None = Field(default=None, gt=0)
     car_name: str = Field(default="", max_length=125)
     category: Literal["economy", "comfort", "business"] = "comfort"
@@ -93,6 +95,10 @@ class ScoreInput(BaseModel):
     reason: Literal["wrecked", "broke", "quit"]
 
 
+class GameFinishInput(ScoreInput):
+    duration_seconds: int = Field(ge=0, le=7200)
+
+
 class ScoreOut(BaseModel):
     accepted: bool
     improved: bool
@@ -103,6 +109,7 @@ class ScoreOut(BaseModel):
 
 
 class LeaderRow(BaseModel):
+    rental_id: int | None = None
     rank: int
     name: str
     car_name: str

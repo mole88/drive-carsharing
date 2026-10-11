@@ -6,6 +6,7 @@ from sqlalchemy import update
 from sqlalchemy.exc import IntegrityError
 
 from app.models import Car, Rental, utcnow
+from app.services import game
 
 RESERVATION_MINUTES = 20
 
@@ -116,6 +117,58 @@ def transition(db, user_id, rental_id, action, finish=None):
         if finish:
             car_values.update(address=finish.address, fuel=finish.fuel)
         db.execute(update(Car).where(Car.id == rental.car_id).values(**car_values))
+        db.commit()
+        db.refresh(rental)
+        return rental
+    except Exception:
+        db.rollback()
+        raise
+
+
+def finish_game(db, user_id, rental_id, data):
+    """Complete the rental and its immutable game outcome in one transaction."""
+    try:
+        rental = db.get(Rental, rental_id)
+        if not rental or rental.user_id != user_id:
+            raise HTTPException(404, "Поездка не найдена")
+        if rental.status == "completed" and rental.game_result:
+            return rental  # Retry after a lost response must not bill twice.
+        if rental.status != "active" or rental.started_at is None:
+            raise HTTPException(409, "Сначала начните поездку")
+        now = utcnow()
+        elapsed = max(0, (now - rental.started_at).total_seconds())
+        if data.duration_seconds > elapsed + 5:
+            raise HTTPException(422, "Длительность превышает время поездки")
+        game.check(data)
+        car = db.get(Car, rental.car_id)
+        result = {field: getattr(data, field) for field in game.RESULT_FIELDS}
+        result.update(
+            rental_id=rental.id,
+            car_id=car.id,
+            car_name=rental.car_name_snapshot or f"{car.brand} {car.model}",
+            category=car.category,
+            week=game.week_of(now),
+        )
+        changed = db.execute(
+            update(Rental)
+            .where(Rental.id == rental.id, Rental.status == "active")
+            .values(
+                status="completed", finished_at=now,
+                finish_address=rental.pickup_address or car.address,
+                total_kopecks=max(1, ceil(elapsed / 60)) * rental.rate_kopecks,
+                game_result=result,
+            )
+        )
+        if changed.rowcount != 1:
+            db.rollback()
+            db.refresh(rental)
+            if rental.status == "completed" and rental.game_result:
+                return rental
+            raise HTTPException(409, "Поездка уже завершена")
+        db.execute(update(Car).where(Car.id == car.id).values(status="available"))
+        db.refresh(rental)
+        if data.duration_seconds >= 10 and data.score > 0:
+            game.record(db, rental)
         db.commit()
         db.refresh(rental)
         return rental
