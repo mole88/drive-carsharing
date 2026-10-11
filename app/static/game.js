@@ -332,6 +332,9 @@
     } else if (world.status === "running") {
       core.step(world, dt, input());
     }
+    if (world.status !== "running" && !world.result && !world.attract) {
+      core.finish(world, world.status);
+    }
     state.scroll +=
       world.player.speed * W.pxPerKmh * dt * (world.attract ? 0.85 : 1);
     consumeEvents();
