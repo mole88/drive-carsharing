@@ -241,6 +241,86 @@ def test_zero_second_trip_finishes_without_qualifying_for_board(setup):
     assert c.get("/api/rentals/current", headers=auth()).json() is None
 
 
+@pytest.mark.parametrize(
+    "duration_ms,minutes", [(0, 1), (1499, 1), (1500, 1), (1501, 2), (60000, 40), (60001, 41)]
+)
+def test_accelerated_clock_bills_exact_boundaries_and_excludes_pause(setup, duration_ms, minutes):
+    c, _ = setup
+    ident = begin(setup, duration=120)  # Much longer wall time, including a pause.
+    played = int(duration_ms / 1000 + 0.5)
+    distance = min(10000, int(duration_ms / 1000 * 40 * 50 / 3.6))
+    payload = run(
+        duration_seconds=played,
+        duration_ms=duration_ms,
+        distance_meters=distance,
+        time_scale=40,
+        level=1,
+        score=0,
+        knockdowns=0,
+    )
+    response = c.post(f"/api/rentals/{ident}/game/finish", headers=auth(), json=payload)
+    assert response.status_code == 200, response.text
+    saved = response.json()
+    assert saved["total_kopecks"] == minutes * 2200
+    outcome = saved["game_result"]
+    assert outcome["charged_minutes"] == minutes
+    assert outcome["trip_duration_seconds"] == duration_ms * 40 / 1000
+    assert outcome["distance_meters"] == distance
+    receipt = c.get(f"/api/rentals/{ident}/receipt", headers=auth()).text
+    assert f"{minutes} мин" in receipt
+    assert f"{distance / 1000:.1f} км" in receipt
+    assert "Пробег" in receipt and "пауза не оплачивается" in receipt
+    retry = c.post(f"/api/rentals/{ident}/game/finish", headers=auth(), json=payload).json()
+    assert retry["game_result"] == outcome and retry["total_kopecks"] == saved["total_kopecks"]
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"duration_ms": None},
+        {"distance_meters": None},
+        {"time_scale": 8},
+        {"duration_ms": 310000},
+        {"duration_ms": 290000},
+        {"distance_meters": 500000},
+    ],
+)
+def test_inconsistent_trip_clock_or_mileage_cannot_complete_rental(setup, overrides):
+    c, factory = setup
+    ident = begin(setup)
+    payload = run(time_scale=40, duration_ms=300000, distance_meters=100000)
+    payload.update(overrides)
+    response = c.post(f"/api/rentals/{ident}/game/finish", headers=auth(), json=payload)
+    assert response.status_code == 422, response.text
+    with factory() as db:
+        assert db.get(Rental, ident).status == "active"
+        assert db.get(Rental, ident).total_kopecks == 0
+        assert db.get(Rental, ident).game_result is None
+
+
+def test_accelerated_clock_keeps_reserved_rate_even_after_fleet_price_changes(setup):
+    c, factory = setup
+    ident = begin(setup, duration=60)
+    with factory() as db:
+        db.get(Car, 7).rate_kopecks = 9999
+        db.commit()
+    response = c.post(
+        f"/api/rentals/{ident}/game/finish",
+        headers=auth(),
+        json=run(
+            duration_seconds=60,
+            duration_ms=60000,
+            distance_meters=30000,
+            time_scale=40,
+            score=100000,
+            knockdowns=10,
+            level=3,
+        ),
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["total_kopecks"] == 88000
+
+
 def test_concurrent_completion_bills_once_and_keeps_first_outcome(setup):
     c, factory = setup
     ident = begin(setup)

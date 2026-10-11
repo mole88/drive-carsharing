@@ -373,14 +373,14 @@ test("the selected rental's locked tariff wins over stale local storage and curr
     assert.equal(p.w.previewSkin, "rio");
     assert.match(
       p.w.document.getElementById("intro-tariff").textContent,
-      /реальному времени/,
+      /1,5 с игры = 1 мин поездки/,
     );
     g.start();
     g.step(1 / 60);
     g.hud(1 / 60);
     assert.equal(g.state.world.car.rateKopecks, 900);
     assert.equal(g.state.world.stats.rentalCost, 900);
-    assert.equal(g.state.world.player.cash, 4100);
+    assert.equal(g.state.world.player.cash, 499100);
     assert.match(p.w.document.getElementById("hud-profit").textContent, /9,00/);
     g.togglePause();
     const pausedTime = g.state.world.time;

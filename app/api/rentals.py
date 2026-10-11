@@ -89,6 +89,8 @@ def receipt(rental_id: int, user: User = Depends(current_user), db: Session = De
         raise HTTPException(409, "Итоги доступны после завершения поездки")
     trip = rental_view(db, rental)
     minutes = max(1, ceil((rental.finished_at - rental.started_at).total_seconds() / 60))
+    if rental.game_result and "charged_minutes" in rental.game_result:
+        minutes = rental.game_result["charged_minutes"]
 
     def date(value):
         return value.strftime("%d.%m.%Y %H:%M:%S") + " UTC"
@@ -105,12 +107,30 @@ def receipt(rental_id: int, user: User = Depends(current_user), db: Session = De
     ]
     if rental.game_result:
         result = rental.game_result
-        rows.extend([
-            ("Очки", str(result["score"])),
-            ("Уровень", str(result["level"])),
-            ("За рулём", f'{result["duration_seconds"]} с'),
-            ("Итог игры", {"wrecked": "Авария", "broke": "Долг", "quit": "Возврат машины"}[result["reason"]]),
-        ])
+        rows.extend(
+            [
+                ("Очки", str(result["score"])),
+                ("Уровень", str(result["level"])),
+                ("За рулём", f"{result['duration_seconds']} с"),
+                (
+                    "Итог игры",
+                    {"wrecked": "Авария", "broke": "Долг", "quit": "Возврат машины"}[
+                        result["reason"]
+                    ],
+                ),
+            ]
+        )
+        if "trip_duration_seconds" in result:
+            rows.extend(
+                [
+                    ("Время поездки", f"{result['trip_duration_seconds'] / 60:.1f} мин"),
+                    ("Пробег", f"{result['distance_meters'] / 1000:.1f} км"),
+                    (
+                        "Масштаб времени",
+                        "1,5 секунды игры = 1 минута поездки; пауза не оплачивается",
+                    ),
+                ]
+            )
     body = "".join(f"<dt>{escape(label)}</dt><dd>{escape(value)}</dd>" for label, value in rows)
     return HTMLResponse(
         f'<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Итоги поездки №{rental.id} — Драйв</title><link rel="stylesheet" href="/static/receipt.css"></head><body><main><a href="/trips">← Мои поездки</a><p class="brand">драйв ↗</p><h1>Итоги поездки №{rental.id}</h1><dl>{body}</dl><div class="total">Стоимость <strong>{rental.total_kopecks / 100:.2f} ₽</strong></div><p>Каждая начатая минута округляется вверх. Минимум — одна минута.</p><p>Расчёт стоимости поездки. Не является кассовым чеком или подтверждением оплаты.</p><button id="print">Распечатать / сохранить PDF</button></main><script src="/static/receipt.js"></script></body></html>'
@@ -128,7 +148,9 @@ def get_rental(rental_id: int, user: User = Depends(current_user), db: Session =
 
 @router.post("/{rental_id}/game/finish", response_model=RentalOut)
 def finish_game(
-    rental_id: int, data: GameFinishInput,
-    user: User = Depends(current_user), db: Session = Depends(get_db),
+    rental_id: int,
+    data: GameFinishInput,
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db),
 ):
     return rental_view(db, rentals.finish_game(db, user.id, rental_id, data))

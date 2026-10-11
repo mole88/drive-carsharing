@@ -50,6 +50,10 @@ const money = (value) =>
   new Intl.NumberFormat("ru-RU", { style: "currency", currency: "RUB" }).format(
     value / 100,
   );
+const tripStats = (result) =>
+  result.trip_duration_seconds !== undefined
+    ? `${(result.trip_duration_seconds / 60).toFixed(1)} мин · ${(result.distance_meters / 1000).toFixed(1)} км`
+    : `${result.duration_seconds} с`;
 const escape = (value) =>
   String(value).replace(
     /[&<>"']/g,
@@ -230,7 +234,7 @@ async function refresh() {
       trips
         .map(
           (r) =>
-            `<article class="trip"><div><strong>${escape(r.car_name)} · ${escape(r.plate)}</strong><p>№${r.id} · ${new Date(r.created_at).toLocaleString("ru-RU")}<br>${labels[r.status]} · ${money(r.rate_kopecks)}/мин${r.status === "completed" ? " · Итого " + money(r.total_kopecks) : ""}${r.game_result ? `<br>${r.game_result.score.toLocaleString("ru-RU")} очков · ${r.game_result.duration_seconds} с · уровень ${r.game_result.level}` : ""}</p></div><div class="actions">${r.status === "reserved" ? `<button class="primary" data-action="start" data-id="${r.id}">Начать поездку</button><button data-action="cancel" data-id="${r.id}">Отменить бронь</button>` : ""}${r.status === "completed" ? `<a class="receipt-link" href="/api/rentals/${r.id}/receipt" target="_blank" rel="noopener">Итоги ↗</a>` : ""}${r.status === "active" ? `<a class="primary receipt-link" href="${driveHref(r.id)}">Продолжить поездку</a>` : ""}</div></article>`,
+            `<article class="trip"><div><strong>${escape(r.car_name)} · ${escape(r.plate)}</strong><p>№${r.id} · ${new Date(r.created_at).toLocaleString("ru-RU")}<br>${labels[r.status]} · ${money(r.rate_kopecks)}/мин${r.status === "completed" ? " · Итого " + money(r.total_kopecks) : ""}${r.game_result ? `<br>${r.game_result.score.toLocaleString("ru-RU")} очков · ${tripStats(r.game_result)} · уровень ${r.game_result.level}` : ""}</p></div><div class="actions">${r.status === "reserved" ? `<button class="primary" data-action="start" data-id="${r.id}">Начать поездку</button><button data-action="cancel" data-id="${r.id}">Отменить бронь</button>` : ""}${r.status === "completed" ? `<a class="receipt-link" href="/api/rentals/${r.id}/receipt" target="_blank" rel="noopener">Итоги ↗</a>` : ""}${r.status === "active" ? `<a class="primary receipt-link" href="${driveHref(r.id)}">Продолжить поездку</a>` : ""}</div></article>`,
         )
         .join("") || "<p>Пока нет поездок. Выберите автомобиль в каталоге.</p>";
   }

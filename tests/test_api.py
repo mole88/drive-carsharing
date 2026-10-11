@@ -234,7 +234,8 @@ def test_new_page_content(setup):
     c, _ = setup
     html = c.get("/").text
     assert "Учебный сервис" not in html
-    assert "20 минут бесплатной брони" in html
+    assert "Выбрать автомобиль" in html
+    assert "1,5 секунды игры = 1 минута поездки." in c.get("/how-it-works").text
     assert 'id="search"' not in html
     assert 'id="search"' in c.get("/cars").text
 

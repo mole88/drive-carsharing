@@ -29,7 +29,6 @@
       bribeDiscount: 0,
       magnet: 96,
       nitroGain: 7.5,
-      cashGain: 1.5,
       perk: "Дешёвый тариф — easiest окупить: аренда съедает мало, нитро копится с полуоборота. Денег с одного клиента меньше.",
     },
     comfort: {
@@ -42,7 +41,6 @@
       bribeDiscount: 0.06,
       magnet: 118,
       nitroGain: 5.5,
-      cashGain: 1.9,
       perk: "Городской баланс: тариф и чек средние, держак честный, патруль снисходительный.",
     },
     business: {
@@ -55,14 +53,17 @@
       bribeDiscount: 0.2,
       magnet: 138,
       nitroGain: 4.5,
-      cashGain: 2.4,
       perk: "Дорогой тариф, но и чек жирнее: бизнес-класс платят больше. Тяжёлый таран, мягкие ямы, скидка на взятки — и медленно рулится.",
     },
   };
 
-  /* Прокат идёт ускоренно: 1 реальная секунда = TIME_SCALE минутных секунд аренды.
-     Так тариф за несколько минут наезда сопоставим с реальным каршерингом. */
-  const TIME_SCALE = 8;
+  /* 1,5 секунды игры = минута поездки. Пауза не расходует время аренды. */
+  const TIME_SCALE = 40;
+  const ECONOMY_VERSION = 2;
+  const SPEED_SCALE = 0.32;
+  const tripSeconds = (seconds) =>
+    (Math.round(seconds * 1000) * TIME_SCALE) / 1000;
+  const tripSpeed = (speed) => speed * SPEED_SCALE;
   const LEVEL_SECONDS = 22;
   const MAX_LEVEL = 30;
   const DEBT_MINUTES = 12;
@@ -86,7 +87,10 @@
   const damageScaleAt = (level) => Math.min(1.9, 1 + (level - 1) * 0.05);
   /* Кузов устаёт: на высоком давлении ремонт не поднимает выше износа */
   const heartCapAt = (world) =>
-    Math.max(2, world.player.maxHearts - Math.floor(Math.max(0, world.level - 6) / 4));
+    Math.max(
+      2,
+      world.player.maxHearts - Math.floor(Math.max(0, world.level - 6) / 4),
+    );
   const raidActive = (level) => level >= RULES.raidLevel;
   const raidKmhAt = (level) =>
     level < RULES.raidLevel
@@ -160,7 +164,18 @@
     },
   };
   const DEFAULT_RATES = { economy: 900, comfort: 1400, business: 2200 };
-  const STARTING_CASH = 5000; // 50 игровых рублей; не считается выручкой.
+  const STARTING_CASH = 500000; // 5 000 ₽; не считается выручкой.
+  const BANKNOTES = [100, 200, 500, 1000, 2000, 5000];
+  const CASH_POOLS = {
+    economy: [100, 100, 100, 200, 200, 500],
+    comfort: [100, 100, 200, 200, 500, 500],
+    business: [100, 200, 200, 500, 500, 1000],
+  };
+  const VIP_NOTES = [500, 500, 1000, 1000, 2000, 5000];
+  function banknote(world, vip = false) {
+    const pool = vip ? VIP_NOTES : CASH_POOLS[world.car.category];
+    return pool[Math.floor(world.rng() * pool.length)] * 100;
+  }
 
   function carProfile(car) {
     const name = String(
@@ -190,9 +205,9 @@
   }
 
   function chargeRental(world) {
-    const total = rentalCost(
+    const total = Math.max(
       world.car.rateKopecks,
-      world.time * TIME_SCALE,
+      rentalCost(world.car.rateKopecks, tripSeconds(world.time)),
     );
     const charge = total - world.stats.rentalCost;
     if (charge <= 0) return;
@@ -204,7 +219,7 @@
   }
 
   function credit(world, baseValue) {
-    const value = Math.round(baseValue * 2.1 * (world.cls.cashGain || 1));
+    const value = Math.round(baseValue);
     world.stats.cashEarned += value;
     const repaid = Math.min(world.player.rentalDebt, value);
     world.player.rentalDebt -= repaid;
@@ -244,9 +259,9 @@
     heatDecay: 0.2,
     heatDecayIdle: 0.45,
     heatIdleAfter: 5,
-    bribeBase: 260,
-    bribePerHeat: 150,
-    bribeEscalation: 0.05,
+    bribeBase: 200000,
+    bribePerHeat: 50000,
+    bribeEscalation: 0.02,
     bribeWindow: 1.5,
     droneLock: 1.35,
     droneHover: 0.9,
@@ -288,14 +303,57 @@
   };
 
   function snapshotRun(world) {
-    return JSON.parse(JSON.stringify({ ...world, randomState: world.rng.state() }));
+    return JSON.parse(
+      JSON.stringify({ ...world, randomState: world.rng.state() }),
+    );
   }
 
   function resumeRun(saved) {
     const world = JSON.parse(JSON.stringify(saved));
+    // Upgrade unfinished runs once; keep already submitted outcomes immutable.
+    if (world.economyVersion !== ECONOMY_VERSION && !world.result) {
+      world.stats.cashEarned *= 100;
+      world.stats.cashSpent *= 100;
+      world.stats.distance *= (TIME_SCALE * SPEED_SCALE) / 1.9;
+      world.stats.rentalCost = rentalCost(
+        world.car.rateKopecks,
+        tripSeconds(world.time),
+      );
+      const balance =
+        STARTING_CASH +
+        world.stats.cashEarned -
+        world.stats.cashSpent -
+        world.stats.rentalCost;
+      world.player.cash = Math.max(0, balance);
+      world.player.rentalDebt = Math.max(0, -balance);
+      const convertNote = (value) =>
+        BANKNOTES.reduce(
+          (best, note) =>
+            Math.abs(note - value * 2) < Math.abs(best - value * 2)
+              ? note
+              : best,
+          100,
+        ) * 100;
+      for (const target of world.targets)
+        target.purse = convertNote(target.purse);
+      for (const pickup of world.pickups)
+        if (pickup.kind === "cash") pickup.value = convertNote(pickup.value);
+      world.timeScale = TIME_SCALE;
+      world.economyVersion = ECONOMY_VERSION;
+      if (world.player.encounter)
+        world.player.encounter.cost = bribeCost(world);
+      world.rules = RULES;
+    }
     world.rng = rand(world.randomState);
-    for (const list of [world.targets, world.cops, world.drones, world.props, world.pickups])
-      for (const entity of list) nextId = Math.max(nextId, (entity.id || 0) + 1);
+    for (const list of [
+      world.targets,
+      world.cops,
+      world.drones,
+      world.props,
+      world.pickups,
+    ])
+      for (const entity of list)
+        nextId = Math.max(nextId, (entity.id || 0) + 1);
     world.events = [];
     return world;
   }
@@ -333,6 +391,7 @@
       },
       cls,
       timeScale: TIME_SCALE,
+      economyVersion: ECONOMY_VERSION,
       debtLimit: rate * DEBT_MINUTES,
       rules: RULES,
       time: 0,
@@ -454,7 +513,7 @@
       spin: 0,
       spinSpeed: 0,
       alarmed: 0,
-      purse: vip ? 150 + Math.floor(rng() * 90) : 34 + Math.floor(rng() * 30),
+      purse: banknote(world, vip),
       crossroad: rng() < 0.65,
       pauseTimer: 0,
     };
@@ -483,7 +542,6 @@
         x: base.x + (fromLeft ? -1 : 1) * i * 46,
       });
       t.crossroad = true;
-      t.purse = Math.round(t.purse * 0.8);
     }
     if (world.rng() < 0.16)
       spawnTarget(world, { lane: (lane + 2) % WORLD.lanes, vip: true });
@@ -551,8 +609,7 @@
       world.phase > 1
         ? ["cone", "oil", "pothole", "barrier", "pothole", "cone"]
         : ["cone", "oil", "pothole", "cone"];
-    const kind =
-      kindArg || kinds[Math.floor(rng() * kinds.length)];
+    const kind = kindArg || kinds[Math.floor(rng() * kinds.length)];
     const lane =
       laneArg === undefined ? Math.floor(rng() * WORLD.lanes) : laneArg;
     const spawnY = forcedY === undefined ? -160 - rng() * 200 : forcedY;
@@ -637,7 +694,7 @@
     const count = 2 + Math.floor(rng() * 2);
     const fromLeft = rng() < 0.5;
     for (let i = 0; i < count; i++) {
-      const value = 30 + Math.floor(rng() * 40) + world.phase * 12;
+      const value = banknote(world);
       spawnPickup(
         world,
         "cash",
@@ -663,7 +720,7 @@
           "cash",
           WORLD.laneCenters[lane] + (i - 1) * 34,
           -140 - i * 66,
-          120,
+          50000,
         );
       return;
     }
@@ -705,9 +762,12 @@
 
   function bribeCost(world) {
     const heat = Math.max(1, Math.round(world.player.heat));
-    const escalation = 1 + RULES.bribeEscalation * world.stats.bribes;
+    const escalation = Math.min(
+      3,
+      1 + RULES.bribeEscalation * world.stats.bribes,
+    );
     const raw = (RULES.bribeBase + RULES.bribePerHeat * heat) * escalation;
-    return Math.round((raw * (1 - world.cls.bribeDiscount)) / 10) * 10;
+    return Math.round((raw * (1 - world.cls.bribeDiscount)) / 50000) * 50000;
   }
 
   function scrape(world, source) {
@@ -805,7 +865,7 @@
         "cash",
         target.x + (world.rng() - 0.5) * 70,
         target.y - 26 - i * 44,
-        Math.round(target.purse / notes),
+        target.purse,
       );
     }
     burst(world, "stars", target.x, target.y, {
@@ -1001,7 +1061,7 @@
       Math.sin(world.time * (9 + p.speed / 26)) * (0.6 + p.speed / 260);
 
     const scroll = p.speed * WORLD.pxPerKmh;
-    world.stats.distance += (p.speed / 3600) * dt * 1.9;
+    world.stats.distance += (tripSpeed(p.speed) / 3600) * dt * TIME_SCALE;
     if (p.invuln > 0) p.invuln -= dt;
     if (p.nitroTime > 0) {
       p.nitroTime -= dt;
@@ -1199,7 +1259,7 @@
           if (p.nitroTime > 0) {
             world.stats.dronesDown += 1;
             p.score += 520;
-            credit(world, 180);
+            credit(world, 100000);
             if (p.hearts < heartCapAt(world) && world.rng() < 0.4) {
               p.hearts += 1;
               popText(world, "ЗАПЧАСТИ +1 БАМПЕР", d.x, d.y - 76, "good");
@@ -1207,7 +1267,7 @@
             burst(world, "boom", d.x, d.y, { color: "#ffd85e" });
             burst(world, "shake", 0, 0, { power: 16 });
             for (let q = 0; q < 3; q++)
-              spawnPickup(world, "cash", d.x + (q - 1) * 40, d.y, 70);
+              spawnPickup(world, "cash", d.x + (q - 1) * 40, d.y, 20000);
             emit(world, "droneKill", { x: d.x, y: d.y });
             world.drones.splice(k, 1);
             continue;
@@ -1318,10 +1378,10 @@
   function collect(world, q) {
     const p = world.player;
     if (q.kind === "cash") {
-      const value = Math.max(20, Math.round(q.value * (1 + p.combo * 0.06)));
+      const value = q.value;
       const income = credit(world, value);
       p.nitro = clamp(p.nitro + 2.4, 0, 100);
-      p.score += Math.round(value * 0.6);
+      p.score += Math.round(40 * (1 + p.combo * 0.06));
       burst(world, "coins", q.x, q.y, { count: 5 });
       emit(world, "cash", { value: income, x: q.x, y: q.y });
       return;
@@ -1334,7 +1394,7 @@
         p.hearts += 1;
         popText(world, "БАМПЕР ЦЕЛ", q.x, q.y - 30, "good");
       } else {
-        const income = credit(world, 250);
+        const income = credit(world, 150000);
         popText(
           world,
           "ЗАПЧАСТИ +" + (income / 100).toFixed(2) + "₽",
@@ -1468,7 +1528,14 @@
       debtLimit: world.debtLimit,
       profit: profit(world),
       rateKopecks: world.car.rateKopecks,
-      rentMinutes: Math.floor((world.time * TIME_SCALE) / 60),
+      rentMinutes: Math.max(
+        1,
+        Math.ceil((tripSeconds(world.time) - 1e-9) / 60),
+      ),
+      tripSeconds: tripSeconds(world.time),
+      timeScale: TIME_SCALE,
+      durationMs: Math.round(world.time * 1000),
+      distanceMeters: Math.round(world.stats.distance * 1000),
       level: world.level,
       profitable: profit(world) > 0,
       won: retired && profit(world) > 0,
@@ -1483,7 +1550,7 @@
       rams: world.stats.rams,
       dodges: world.stats.dodges,
       distance: world.stats.distance,
-      topSpeed: Math.round(world.stats.topSpeed),
+      topSpeed: Math.round(tripSpeed(world.stats.topSpeed)),
       raidHits: world.raid.hits,
       raidKmh: Math.round(raidKmhAt(world.level)),
       time: Math.round(world.time),
@@ -1535,10 +1602,7 @@
       if (f.life >= f.ttl) world.fx.splice(k, 1);
     }
     if (world.status === "wrecked" && !world.result) finish(world, "wrecked");
-    else if (
-      world.player.rentalDebt >= world.debtLimit &&
-      !world.result
-    )
+    else if (world.player.rentalDebt >= world.debtLimit && !world.result)
       finish(world, "broke");
     else if (!world.result && world.level !== world.levelShown) {
       world.levelShown = world.level;
@@ -1556,6 +1620,10 @@
     rentalCost,
     profit,
     TIME_SCALE,
+    tripSeconds,
+    tripSpeed,
+    BANKNOTES,
+    CASH_POOLS,
     LEVEL_SECONDS,
     MAX_LEVEL,
     DEBT_MINUTES,

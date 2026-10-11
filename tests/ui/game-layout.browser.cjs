@@ -52,6 +52,23 @@ fs.mkdirSync("tmp", { recursive: true });
       );
       await page.waitForFunction(() => DriveGame.state.world.time > 2);
       const rental = await page.evaluate(() => DriveGame.state.rental.id);
+      const cashWidths = await page.evaluate(() => {
+        const world = DriveGame.state.world;
+        const original = world.player.cash;
+        const widths = [500000, 10000000, 99999999].map((cash) => {
+          world.player.cash = cash;
+          DriveGame.hud(0);
+          const el = document.querySelector("#hud-cash");
+          return { cash, width: el.clientWidth, content: el.scrollWidth };
+        });
+        world.player.cash = original;
+        DriveGame.hud(0);
+        return widths;
+      });
+      assert.ok(
+        cashWidths.every((size) => size.content <= size.width),
+        JSON.stringify(cashWidths),
+      );
       const measurements = await page.evaluate(() => {
         const box = (selector) => {
           const r = document.querySelector(selector).getBoundingClientRect();
@@ -173,6 +190,27 @@ fs.mkdirSync("tmp", { recursive: true });
       assert.equal(stored.status, "completed");
       assert.equal(stored.game_result.rental_id, rental);
       assert.ok(stored.total_kopecks > 0);
+      const clock = stored.game_result;
+      assert.equal(clock.time_scale, 40);
+      assert.equal(
+        clock.trip_duration_seconds,
+        (clock.duration_ms * 40) / 1000,
+      );
+      assert.equal(
+        stored.total_kopecks,
+        Math.max(1, Math.ceil((clock.duration_ms * 40) / 60000)) *
+          stored.rate_kopecks,
+      );
+      const local = await page.evaluate(() => DriveGame.state.world.result);
+      assert.equal(local.rentalCost, stored.total_kopecks);
+      assert.equal(local.distanceMeters, clock.distance_meters);
+      assert.match(await page.locator("#result-meta").innerText(), /мин.*км/);
+      const receipt = await (
+        await context.request.get(`/api/rentals/${rental}/receipt`)
+      ).text();
+      assert.ok(
+        receipt.includes("Пробег") && receipt.includes("пауза не оплачивается"),
+      );
       assert.equal(
         (await (await context.request.get("/api/cars/1")).json()).status,
         "available",

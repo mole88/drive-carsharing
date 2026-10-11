@@ -763,7 +763,13 @@
       worldPop(world, "НОВЫЙ РЕКОРД!", W.width / 2, 430, "gold", 1.6);
       cheer();
     }
-    $("hud-cash").textContent = money(p.cash);
+    $("hud-cash").textContent = new Intl.NumberFormat("ru-RU", {
+      style: "currency",
+      currency: "RUB",
+      maximumFractionDigits: 0,
+      minimumFractionDigits: 0,
+    }).format(p.cash / 100);
+    $("hud-cash").title = money(p.cash);
     $("hud-rent").textContent = money(world.stats.rentalCost);
     $("hud-revenue").textContent = money(world.stats.cashEarned);
     const net = core.profit(world);
@@ -775,8 +781,9 @@
     $("hud-level").textContent = world.level;
     $("hud-phase").textContent = world.phaseName;
     $("hud-clock").textContent =
-      Math.floor((world.time * core.TIME_SCALE) / 60) + " мин";
-    $("hud-speed").textContent = Math.round(p.speed);
+      Math.floor(core.tripSeconds(world.time) / 60) + " мин";
+    $("hud-distance").textContent = world.stats.distance.toFixed(1) + " км";
+    $("hud-speed").textContent = Math.round(core.tripSpeed(p.speed));
     raidGauge(world);
     retireLabel(world);
     const fill = $("hud-nitro-fill");
@@ -963,6 +970,9 @@
         bribes: result.bribes,
         profit_kopecks: result.profit,
         duration_seconds: result.time,
+        time_scale: result.timeScale,
+        duration_ms: result.durationMs,
+        distance_meters: result.distanceMeters,
         reason: result.reason,
         best_combo: result.bestCombo,
       }),
@@ -1054,7 +1064,12 @@
           : "Машина возвращена";
     $("result-score").textContent =
       result.score.toLocaleString("ru-RU") + " очков";
-    $("result-meta").textContent = result.time + " с · уровень " + result.level;
+    $("result-meta").textContent = Number.isFinite(result.tripSeconds)
+      ? (result.tripSeconds / 60).toFixed(1) +
+        " мин · " +
+        (result.distanceMeters / 1000).toFixed(1) +
+        " км"
+      : result.time + " с · уровень " + result.level;
     $("result-grade").textContent =
       result.grade || core.grade(result.score).grade;
     $("result-stars").innerHTML = "★".repeat(result.stars || 0);
@@ -1074,6 +1089,8 @@
       paintOutcome({
         ...r,
         time: r.duration_seconds,
+        tripSeconds: r.trip_duration_seconds,
+        distanceMeters: r.distance_meters,
         profit: r.profit_kopecks,
         bestCombo: r.best_combo,
         won: r.reason === "quit" && r.profit_kopecks > 0,
@@ -1222,7 +1239,7 @@
     $("drive-title").textContent = state.rental.car_name;
     $("intro-car").textContent = state.rental.car_name;
     $("intro-tariff").textContent =
-      money(car.rate_kopecks) + "/мин · аренда по реальному времени";
+      money(car.rate_kopecks) + "/мин · 1,5 с игры = 1 мин поездки";
     state.world = createWorld(true);
     const palette = carPalette(car);
     art.playerCar($("car-preview").getContext("2d"), {

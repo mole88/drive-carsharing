@@ -906,7 +906,16 @@
     ctxLine(ctx, 4);
     if (q.kind === "cash") {
       ctx.rotate(Math.sin((q.bob || 0) * 0.6) * 0.18);
-      ctx.fillStyle = "#8fd6a0";
+      const note = q.value / 100;
+      ctx.fillStyle =
+        {
+          100: "#ccad7c",
+          200: "#9ccd9b",
+          500: "#c6a9d7",
+          1000: "#85c9bc",
+          2000: "#90bcdc",
+          5000: "#db9a82",
+        }[note] || "#8fd6a0";
       roundRect(ctx, -26, -16, 52, 32, 6);
       ctx.fill();
       ctx.stroke();
@@ -914,10 +923,10 @@
       roundRect(ctx, -18, -10, 36, 20, 4);
       ctx.fill();
       ctx.fillStyle = "#2e7d4f";
-      ctx.font = "700 20px system-ui, sans-serif";
+      ctx.font = "700 12px system-ui, sans-serif";
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
-      ctx.fillText("₽", 0, 1);
+      ctx.fillText(String(note), 0, 1);
       ctx.fillStyle = "rgba(255,255,255,.6)";
       ctx.beginPath();
       ctx.arc(-30, -18, 5, 0, Math.PI * 2);
@@ -1140,15 +1149,21 @@
     ctx.fillRect(visibleLeft, roadTop, left - 14 - visibleLeft, h);
     ctx.fillRect(right + 14, roadTop, visibleLeft + visibleWidth - right, h);
     // Continue the city across wide displays while retaining square sprite pixels.
-    for (let x = Math.floor(visibleLeft / 180) * 180; x < visibleLeft + visibleWidth; x += 180) {
+    for (
+      let x = Math.floor(visibleLeft / 180) * 180;
+      x < visibleLeft + visibleWidth;
+      x += 180
+    ) {
       if (x + 130 > left - 90 && x < right + 90) continue;
-      for (let y = roadTop - 240 + (scroll * .35) % 260; y < h; y += 260) {
+      for (let y = roadTop - 240 + ((scroll * 0.35) % 260); y < h; y += 260) {
         ctx.fillStyle = "#142821";
         ctx.fillRect(x + 12, y, 130, 220);
-        ctx.fillStyle = pal.neon[Math.abs(Math.round(x / 180)) % pal.neon.length];
-        ctx.globalAlpha = .35;
+        ctx.fillStyle =
+          pal.neon[Math.abs(Math.round(x / 180)) % pal.neon.length];
+        ctx.globalAlpha = 0.35;
         for (let wy = y + 20; wy < y + 200; wy += 34)
-          for (let wx = x + 26; wx < x + 130; wx += 28) ctx.fillRect(wx, wy, 10, 15);
+          for (let wx = x + 26; wx < x + 130; wx += 28)
+            ctx.fillRect(wx, wy, 10, 15);
         ctx.globalAlpha = 1;
       }
     }

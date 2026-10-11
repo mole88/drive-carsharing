@@ -6,7 +6,7 @@ from sqlalchemy import update
 from sqlalchemy.exc import IntegrityError
 
 from app.models import Car, Rental, utcnow
-from app.services import game
+from app.services import game, trip
 
 RESERVATION_MINUTES = 20
 
@@ -139,6 +139,17 @@ def finish_game(db, user_id, rental_id, data):
         elapsed = max(0, (now - rental.started_at).total_seconds())
         if data.duration_seconds > elapsed + 5:
             raise HTTPException(422, "Длительность превышает время поездки")
+        clock_fields = (data.time_scale, data.duration_ms, data.distance_meters)
+        has_clock = any(value is not None for value in clock_fields)
+        if has_clock:
+            if any(value is None for value in clock_fields):
+                raise HTTPException(422, "Передайте время и пробег поездки вместе")
+            played = data.duration_ms / 1000
+            if abs(played - data.duration_seconds) > 0.501 or played > elapsed + 5:
+                raise HTTPException(422, "Длительность не совпадает с игровыми часами")
+            distance_limit = played * trip.TIME_SCALE * trip.MAX_CITY_SPEED / 3.6 + 1
+            if data.distance_meters > distance_limit:
+                raise HTTPException(422, "Пробег не совпадает с длительностью поездки")
         game.check(data)
         car = db.get(Car, rental.car_id)
         result = {field: getattr(data, field) for field in game.RESULT_FIELDS}
@@ -150,6 +161,17 @@ def finish_game(db, user_id, rental_id, data):
             week=game.week_of(now),
             best_combo=data.best_combo,
         )
+        # Old clients and historical outcomes retain their previous billing rules.
+        minutes = max(1, ceil(elapsed / 60))
+        if has_clock:
+            minutes = trip.charged_minutes(data.duration_ms)
+            result.update(
+                time_scale=trip.TIME_SCALE,
+                duration_ms=data.duration_ms,
+                trip_duration_seconds=data.duration_ms * trip.TIME_SCALE / 1000,
+                charged_minutes=minutes,
+                distance_meters=data.distance_meters,
+            )
         changed = db.execute(
             update(Rental)
             .where(Rental.id == rental.id, Rental.status == "active")
@@ -157,7 +179,7 @@ def finish_game(db, user_id, rental_id, data):
                 status="completed",
                 finished_at=now,
                 finish_address=rental.pickup_address or car.address,
-                total_kopecks=max(1, ceil(elapsed / 60)) * rental.rate_kopecks,
+                total_kopecks=minutes * rental.rate_kopecks,
                 game_result=result,
             )
         )

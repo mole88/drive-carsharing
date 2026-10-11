@@ -265,6 +265,8 @@ test("серверные пороги лидерборда зеркалят яд
   const grab = (name) => Number(service.match(new RegExp("^" + name + " = (\\d+)$", "m"))[1]);
   assert.equal(grab("LEVEL_SECONDS"), LEVEL_SECONDS);
   assert.equal(grab("MAX_LEVEL"), MAX_LEVEL);
+  const clock = fs.readFileSync(path.resolve(__dirname, "../../app/services/trip.py"), "utf8");
+  assert.equal(Number(clock.match(/^TIME_SCALE = (\d+)$/m)[1]), TIME_SCALE);
   assert.ok(grab("SCORE_SLACK") > 4000, "запас по очкам/сек должен покрывать лучший забег");
 });
 

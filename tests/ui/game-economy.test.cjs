@@ -6,6 +6,88 @@ const sim = require("./game-sim.cjs");
 const core = sim.core;
 const { TIME_SCALE, DEBT_MINUTES, RULES } = core;
 
+test("one minute of play advances 40 trip minutes and city mileage follows the speedometer", () => {
+  assert.equal(60 / TIME_SCALE, 1.5);
+  const w = core.createRun({ seed: 31 });
+  for (let i = 0; i < 300; i++) {
+    const distance = w.stats.distance;
+    core.step(w, sim.DT, { throttle: 1 });
+    assert.ok(
+      Math.abs(
+        w.stats.distance -
+          distance -
+          (core.tripSpeed(w.player.speed) * sim.DT * TIME_SCALE) / 3600,
+      ) < 1e-9,
+    );
+  }
+  w.time = 60;
+  core.finish(w, "quit");
+  assert.equal(w.result.tripSeconds, 2400);
+  assert.equal(w.result.durationMs, 60000);
+  assert.equal(w.result.rentMinutes, 40);
+  assert.equal(w.result.distanceMeters, Math.round(w.stats.distance * 1000));
+});
+
+test("banknotes credit their literal denomination even with maximum combo and business class", () => {
+  const w = core.createRun({ seed: 2, category: "business" });
+  w.player.combo = RULES.comboCap;
+  for (const rubles of core.BANKNOTES) {
+    const before = w.player.cash;
+    core.collect(w, { kind: "cash", value: rubles * 100, x: 0, y: 0 });
+    assert.equal(w.player.cash - before, rubles * 100);
+  }
+  for (const category of ["economy", "comfort", "business"]) {
+    const run = core.createRun({ seed: 4, category });
+    for (let i = 0; i < 100; i++)
+      core.knock(run, core.spawnTarget(run, { vip: i % 5 === 0 }));
+    assert.ok(run.pickups.every((q) => core.BANKNOTES.includes(q.value / 100)));
+  }
+});
+
+test("bribes stay in thousands, in round sums, with bounded escalation", () => {
+  for (const category of ["economy", "comfort", "business"])
+    for (const heat of [0, 1, 3, 6])
+      for (const bribes of [0, 10, 100, 1000]) {
+        const cost = core.bribeCost({
+          cls: core.CLASSES[category],
+          player: { heat },
+          stats: { bribes },
+        });
+        assert.ok(cost >= 200000 && cost <= 1500000);
+        assert.equal(cost % 50000, 0);
+      }
+});
+
+test("old unfinished runs convert once without resetting progress or making up earnings", () => {
+  const old = core.snapshotRun(core.createRun({ seed: 22, rateKopecks: 900 }));
+  delete old.economyVersion;
+  old.timeScale = 8;
+  old.time = 60;
+  old.player.hearts = 3;
+  old.stats.cashEarned = 20000;
+  old.stats.cashSpent = 10000;
+  old.stats.rentalCost = 7200;
+  old.stats.distance = 5;
+  old.targets = [{ id: 20, purse: 40 }];
+  old.pickups = [{ id: 21, kind: "cash", value: 120 }];
+  const upgraded = core.resumeRun(old);
+  assert.equal(upgraded.time, 60);
+  assert.equal(upgraded.player.hearts, 3);
+  assert.equal(upgraded.timeScale, 40);
+  assert.equal(upgraded.stats.rentalCost, 36000);
+  assert.equal(upgraded.player.cash, 1464000);
+  assert.ok(core.BANKNOTES.includes(upgraded.targets[0].purse / 100));
+  assert.deepEqual(
+    core.snapshotRun(core.resumeRun(core.snapshotRun(upgraded))),
+    core.snapshotRun(upgraded),
+  );
+  old.result = { time: 60, rentalCost: 7200 };
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(core.resumeRun(old).result)),
+    old.result,
+  );
+});
+
 test("rent charges every started rental minute on the accelerated clock", () => {
   for (const rate of [900, 950, 1400, 2200, 1733]) {
     const w = core.createRun({ seed: 1, rateKopecks: rate });
@@ -28,9 +110,12 @@ test("a few minutes behind the wheel cost like a real carshare trip", () => {
   const w = core.createRun({ seed: 2, rateKopecks: rate });
   w.time = 300;
   core.finish(w, "quit");
-  assert.equal(w.result.rentMinutes, 40, "5 минут игры = 40 минут тарифа");
+  assert.equal(w.result.rentMinutes, 200, "5 минут игры = 200 минут поездки");
   assert.equal(w.result.rentalCost, core.rentalCost(rate, 300 * TIME_SCALE));
-  assert.ok(w.result.rentalCost >= rate * 40, "аренда за смену должна быть ощутимой");
+  assert.ok(
+    w.result.rentalCost >= rate * 40,
+    "аренда за смену должна быть ощутимой",
+  );
   assert.equal(w.debtLimit, rate * DEBT_MINUTES);
 });
 
@@ -40,10 +125,13 @@ test("rent debt is repaid by earnings instead of disappearing when cash hits zer
   core.step(w, 0.01, {});
   assert.equal(w.player.cash, 0);
   assert.equal(w.player.rentalDebt, 2100);
-  core.collect(w, { kind: "cash", value: 2000, x: 0, y: 0 });
+  core.collect(w, { kind: "cash", value: 20000, x: 0, y: 0 });
   assert.equal(w.player.rentalDebt, 0);
   assert.equal(w.player.cash, w.stats.cashEarned - 2100);
-  assert.equal(core.profit(w), w.stats.cashEarned - w.stats.cashSpent - w.stats.rentalCost);
+  assert.equal(
+    core.profit(w),
+    w.stats.cashEarned - w.stats.cashSpent - w.stats.rentalCost,
+  );
 });
 
 test("only a paid-off retirement wins; wrecking pays nothing", () => {
@@ -57,7 +145,7 @@ test("only a paid-off retirement wins; wrecking pays nothing", () => {
   assert.equal(idle.result.bonus, 0, "должник не получает кассу");
 
   const earned = core.createRun({ seed: 5, rateKopecks: 900 });
-  core.collect(earned, { kind: "cash", value: 10000, x: 0, y: 0 });
+  core.collect(earned, { kind: "cash", value: 200000, x: 0, y: 0 });
   earned.time = 150;
   core.finish(earned, "quit");
   assert.equal(earned.result.profit, earned.stats.cashEarned - rent);
@@ -105,7 +193,10 @@ test("the retirement bonus adds a quarter of the score, not the whole wallet", (
   assert.ok(r.bonus <= r.score * 0.35, "бонус раздувает очки: " + r.bonus);
   assert.ok(
     r.score <= r.time * 9000,
-    "возврат не проходит серверную проверку правдоподобия: " + r.score + "/" + r.time,
+    "возврат не проходит серверную проверку правдоподобия: " +
+      r.score +
+      "/" +
+      r.time,
   );
   assert.ok(r.score >= 320000 + r.bonus - 1);
 });
@@ -117,29 +208,44 @@ test("four models have distinct skins and physical handling, including two econo
   assert.equal(new Set(profiles.map((p) => p.skin)).size, 4);
   assert.equal(new Set(profiles.map((p) => p.maxSpeed)).size, 4);
   assert.equal(new Set(profiles.map((p) => p.steer)).size, 4);
-  const rio = core.createRun({ carName: "Kia Rio", category: "economy", seed: 5 });
+  const rio = core.createRun({
+    carName: "Kia Rio",
+    category: "economy",
+    seed: 5,
+  });
   const solaris = core.createRun({
     carName: "Hyundai Solaris",
     category: "economy",
     seed: 5,
   });
-  const bmw = core.createRun({ carName: "BMW 320i", category: "business", seed: 5 });
+  const bmw = core.createRun({
+    carName: "BMW 320i",
+    category: "business",
+    seed: 5,
+  });
   core.step(rio, 0.05, { fast: true });
   core.step(solaris, 0.05, { fast: true });
   core.step(bmw, 0.05, { fast: true });
   assert.ok(
-    bmw.player.speed > solaris.player.speed && solaris.player.speed > rio.player.speed,
+    bmw.player.speed > solaris.player.speed &&
+      solaris.player.speed > rio.player.speed,
   );
   assert.notEqual(rio.player.width, solaris.player.width);
   assert.notEqual(rio.player.hearts, solaris.player.hearts);
-  assert.equal(core.carProfile({ carName: "Another car", category: "economy" }).skin, "economy");
+  assert.equal(
+    core.carProfile({ carName: "Another car", category: "economy" }).skin,
+    "economy",
+  );
 });
 
 test("car class changes the money curve, not only the label", () => {
-  const gains = ["economy", "comfort", "business"].map(
-    (category) => core.CLASSES[category].cashGain,
+  const gains = ["economy", "comfort", "business"].map((category) =>
+    core.CASH_POOLS[category].reduce((sum, value) => sum + value, 0),
   );
-  assert.ok(gains[0] < gains[1] && gains[1] < gains[2], "чек должен расти по классу");
+  assert.ok(
+    gains[0] < gains[1] && gains[1] < gains[2],
+    "чек должен расти по классу",
+  );
   for (const category of ["economy", "comfort", "business"]) {
     const cls = core.CLASSES[category];
     assert.ok(cls.hearts >= 4 && cls.hearts <= 8, category + " hearts");
@@ -150,8 +256,16 @@ test("car class changes the money curve, not only the label", () => {
   assert.ok(business.mass > economy.mass, "бизнес тяжелее");
   assert.ok(business.steer < economy.steer, "бизнес рулится медленнее");
   assert.ok(
-    core.bribeCost({ player: { heat: 3 }, cls: business, stats: { bribes: 0 } }) <
-      core.bribeCost({ player: { heat: 3 }, cls: economy, stats: { bribes: 0 } }),
+    core.bribeCost({
+      player: { heat: 3 },
+      cls: business,
+      stats: { bribes: 0 },
+    }) <
+      core.bribeCost({
+        player: { heat: 3 },
+        cls: economy,
+        stats: { bribes: 0 },
+      }),
     "скидка на взятки обязана работать",
   );
 });
