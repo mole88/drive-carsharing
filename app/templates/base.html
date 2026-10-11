@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <title>{{title}} — Драйв</title>
-    <link rel="stylesheet" href="/static/style.css" />
+    <link rel="stylesheet" href="/static/style.css?v={{asset_version}}" />
   </head>
   <body data-page="{{page}}">
     <a class="skip-link" href="#main-content">Перейти к содержимому</a>
@@ -41,7 +41,7 @@
         полной минуты.</span
       >
     </footer>
-    <script src="/static/app.js" defer></script>
+    <script src="/static/app.js?v={{asset_version}}" defer></script>
     {{scripts}}
   </body>
 </html>

@@ -1,5 +1,6 @@
 """Each URL renders a separate screen within the shared site layout."""
 
+from hashlib import sha256
 from pathlib import Path
 from urllib.parse import quote
 
@@ -12,6 +13,12 @@ from app.core.security import current_user
 
 router = APIRouter()
 templates = Path(__file__).parent / "templates"
+static = Path(__file__).parent / "static"
+asset_version = sha256(
+    b"".join(
+        path.read_bytes() for path in sorted(static.iterdir()) if path.suffix in {".css", ".js"}
+    )
+).hexdigest()[:16]
 PAGES = {
     "/": ("home", "Каршеринг в Санкт-Петербурге", False),
     "/cars": ("cars", "Автомобили", False),
@@ -47,7 +54,7 @@ def page(request: Request, db: Session = Depends(get_db)):
         else ""
     )
     scripts = (
-        '<script src="/static/operations.js" defer></script>'
+        f'<script src="/static/operations.js?v={asset_version}" defer></script>'
         if name in {"support", "admin", "admin-fleet"}
         else ""
     )
@@ -58,6 +65,7 @@ def page(request: Request, db: Session = Depends(get_db)):
         "subnav": subnav,
         "content": (templates / f"{name}.html").read_text(encoding="utf-8"),
         "scripts": scripts,
+        "asset_version": asset_version,
     }
     for key, value in values.items():
         html = html.replace("{{" + key + "}}", value)

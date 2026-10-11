@@ -160,8 +160,20 @@ def test_concurrent_booking(setup):
 
 def test_pages(setup):
     c, _ = setup
-    assert c.get("/").status_code == 200
-    assert c.get("/static/app.js").status_code == 200
+    import re
+
+    page = c.get("/cars")
+    assert page.status_code == 200
+    assert page.headers["cache-control"] == "no-store"
+    for filename in ["app.js", "style.css"]:
+        url = re.search(rf"/static/{re.escape(filename)}\?v=[a-f0-9]{{16}}", page.text)
+        assert url, f"{filename} must have a versioned URL to bypass old browser caches"
+        asset = c.get(url.group())
+        assert asset.status_code == 200
+        assert asset.headers["cache-control"] == "no-cache"
+        cached = c.get(url.group(), headers={"If-None-Match": asset.headers["etag"]})
+        assert cached.status_code == 304
+        assert cached.headers["cache-control"] == "no-cache"
     assert c.get("/health").json() == {"status": "ok"}
     assert c.get("/openapi.json").status_code == 200
 

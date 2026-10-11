@@ -39,6 +39,7 @@ async function screen(name, role = "user", query = "") {
     content: read(`app/templates/${name}.html`),
     subnav: "",
     scripts: "",
+    asset_version: "test-version",
   }))
     html = html.replaceAll(`{{${key}}}`, value);
   const path =
