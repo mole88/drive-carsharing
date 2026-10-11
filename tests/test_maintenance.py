@@ -81,3 +81,45 @@ def test_migrate_existing_rental_preserves_data(tmp_path):
         assert db.execute("SELECT total_kopecks FROM rentals WHERE id=1").fetchone() == (900,)
         for (photo,) in photos:
             assert (root / "app" / "static" / photo).is_file()
+
+
+def test_photo_backfill_preserves_custom_photos_and_car_details(tmp_path):
+    database = tmp_path / "photos.db"
+    env = {**os.environ, "DATABASE_URL": f"sqlite:///{database}"}
+    root = Path(__file__).resolve().parents[1]
+
+    def migrate(revision):
+        subprocess.run(
+            [sys.executable, "-m", "alembic", "upgrade", revision],
+            env=env,
+            cwd=root,
+            check=True,
+            capture_output=True,
+        )
+
+    migrate("0005")
+    with sqlite3.connect(database) as db:
+        db.executemany(
+            "INSERT INTO cars (brand,model,plate,category,address,fuel,rate_kopecks,status,image) "
+            "VALUES (?,?,?,'economy','Saved address',37,1733,'maintenance',?)",
+            [
+                ("Kia", "Rio", "А101АА178", None),
+                ("Hyundai", "Solaris", "А102АА178", ""),
+                ("Skoda", "Octavia", "А103АА178", None),
+                ("BMW", "320i", "А104АА178", "images/custom.png"),
+                ("Kia", "Rio", "PRIVATE123", None),
+            ],
+        )
+    migrate("head")
+    migrate("head")
+    with sqlite3.connect(database) as db:
+        assert db.execute("SELECT image FROM cars ORDER BY id").fetchall() == [
+            ("images/kiario.png",),
+            ("images/hsolaris.png",),
+            ("images/skodaoctavia.png",),
+            ("images/custom.png",),
+            (None,),
+        ]
+        assert db.execute(
+            "SELECT DISTINCT address,fuel,rate_kopecks,status FROM cars"
+        ).fetchall() == [("Saved address", 37, 1733, "maintenance")]
