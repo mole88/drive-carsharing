@@ -178,6 +178,20 @@ def test_pages(setup):
     assert c.get("/openapi.json").status_code == 200
 
 
+def test_selected_car_details_for_game(setup):
+    c, factory = setup
+    with factory() as db:
+        car = db.get(Car, 1)
+        car.image = "images/kiario.png"
+        db.commit()
+    response = c.get("/api/cars/1")
+    assert response.status_code == 200
+    assert response.json()["id"] == 1
+    assert response.json()["rate_kopecks"] == 950
+    assert response.json()["image"] == "images/kiario.png"
+    assert c.get("/api/cars/999999").status_code == 404
+
+
 def test_expired_booking_releases_car_and_cannot_start(setup):
     c, factory = setup
     rid = c.post("/api/rentals", headers=auth(), json={"car_id": 1}).json()["id"]

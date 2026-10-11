@@ -78,6 +78,9 @@
     const w = o.width,
       h = o.height,
       s = o.scale || 1;
+    const skin = o.skin || "comfort";
+    const wagon = skin === "octavia";
+    const sport = skin === "bmw";
     ctx.save();
     ctx.translate(o.x, o.y);
     ctx.rotate(o.tilt || 0);
@@ -151,7 +154,14 @@
     ctx.stroke();
 
     ctx.fillStyle = "#1d3742";
-    roundRect(ctx, -w * 0.26, -h * 0.14, w * 0.52, h * 0.16, 8);
+    roundRect(
+      ctx,
+      -w * 0.26,
+      -h * 0.14,
+      w * 0.52,
+      h * (wagon ? 0.27 : sport ? 0.13 : 0.16),
+      8,
+    );
     ctx.fill();
     ctx.stroke();
     ctx.fillStyle = "rgba(255,255,255,.22)";
@@ -163,6 +173,55 @@
     ctx.moveTo(-w * 0.28, -h * 0.33);
     ctx.lineTo(w * 0.28, -h * 0.33);
     ctx.stroke();
+    ctxLine(ctx, 6);
+
+    // Каждая модель отличается деталями кузова, а не только цветом.
+    ctx.fillStyle = o.colorDark || "#17312e";
+    if (skin === "rio") {
+      roundRect(ctx, -w * 0.09, -h * 0.34, w * 0.18, h * 0.19, 3);
+      ctx.fill();
+      ctx.fillStyle = "#b64148";
+      roundRect(ctx, -w * 0.36, h * 0.02, w * 0.72, 9, 3);
+      ctx.fill();
+    } else if (skin === "solaris") {
+      ctx.fillStyle = "#f8da68";
+      roundRect(ctx, -w * 0.3, -h * 0.29, w * 0.6, 12, 3);
+      ctx.fill();
+      for (const sx of [-1, 1]) {
+        roundRect(ctx, sx * w * 0.38 - 5, h * 0.06, 10, 24, 3);
+        ctx.fill();
+      }
+    } else if (wagon) {
+      ctx.strokeStyle = "#d6f5e2";
+      ctx.lineWidth = 5;
+      for (const sx of [-1, 1]) {
+        ctx.beginPath();
+        ctx.moveTo(sx * w * 0.35, -h * 0.3);
+        ctx.lineTo(sx * w * 0.35, h * 0.05);
+        ctx.stroke();
+      }
+    } else if (sport) {
+      for (const sx of [-1, 1]) {
+        ctx.fillStyle = sx < 0 ? "#62bdff" : "#ffffff";
+        roundRect(ctx, sx * w * 0.1 - 4, -h * 0.34, 8, h * 0.2, 2);
+        ctx.fill();
+      }
+      ctx.fillStyle = "#15243b";
+      roundRect(ctx, -w * 0.47, h * 0.02, w * 0.94, 10, 3);
+      ctx.fill();
+      ctxLine(ctx, 3);
+      ctx.stroke();
+    }
+    ctx.fillStyle = "#f6f8ef";
+    ctx.font = "800 9px system-ui, sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText(
+      { rio: "RIO", solaris: "SOLARIS", octavia: "OCTAVIA", bmw: "BMW" }[
+        skin
+      ] || "ДРАЙВ",
+      0,
+      h * 0.2,
+    );
     ctxLine(ctx, 6);
     ctx.fillStyle = "rgba(255,255,255,.16)";
     roundRect(ctx, -w * 0.22, h * 0.01, w * 0.2, h * 0.09, 6);
@@ -499,13 +558,29 @@
     ]) {
       ctx.fillStyle = "#2b3d49";
       ctx.beginPath();
-      ctx.ellipse(px, py, 26, 7, Math.sin((d.rotor || 0) + px) * 0.6, 0, Math.PI * 2);
+      ctx.ellipse(
+        px,
+        py,
+        26,
+        7,
+        Math.sin((d.rotor || 0) + px) * 0.6,
+        0,
+        Math.PI * 2,
+      );
       ctx.fill();
       ctx.stroke();
       ctx.globalAlpha = base * 0.55;
       ctx.fillStyle = "#9fd8ff";
       ctx.beginPath();
-      ctx.ellipse(px, py, 27, 5, Math.cos((d.rotor || 0) + py) * 0.5, 0, Math.PI * 2);
+      ctx.ellipse(
+        px,
+        py,
+        27,
+        5,
+        Math.cos((d.rotor || 0) + py) * 0.5,
+        0,
+        Math.PI * 2,
+      );
       ctx.fill();
       ctx.globalAlpha = base;
     }
@@ -519,7 +594,8 @@
     ctx.arc(0, 1, 11, 0, Math.PI * 2);
     ctx.fill();
     ctx.stroke();
-    ctx.fillStyle = d.state === "lock" || d.state === "dive" ? "#ff4d4d" : "#7fe3d8";
+    ctx.fillStyle =
+      d.state === "lock" || d.state === "dive" ? "#ff4d4d" : "#7fe3d8";
     ctx.beginPath();
     ctx.arc(0, 1, 6, 0, Math.PI * 2);
     ctx.fill();
@@ -625,7 +701,13 @@
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
     ctx.font = "700 22px system-ui, sans-serif";
-    const glyphs = { nitro: "⚡", repair: "+", magnet: "M", radar: "◉", shield: "◈" };
+    const glyphs = {
+      nitro: "⚡",
+      repair: "+",
+      magnet: "M",
+      radar: "◉",
+      shield: "◈",
+    };
     ctx.fillText(glyphs[q.kind] || "?", 0, 1);
     ctx.restore();
   }
@@ -715,8 +797,20 @@
   function skyline(ctx, w, h, pal, seedFn, offset, horizon) {
     let s = seedFn;
     const rows = [
-      { top: horizon - h * 0.19, span: h * 0.19, w: 66, alpha: 0.45, par: 0.06 },
-      { top: horizon - h * 0.11, span: h * 0.11, w: 92, alpha: 0.85, par: 0.14 },
+      {
+        top: horizon - h * 0.19,
+        span: h * 0.19,
+        w: 66,
+        alpha: 0.45,
+        par: 0.06,
+      },
+      {
+        top: horizon - h * 0.11,
+        span: h * 0.11,
+        w: 92,
+        alpha: 0.85,
+        par: 0.14,
+      },
     ];
     for (const row of rows) {
       ctx.fillStyle = pal.block;
@@ -741,7 +835,12 @@
       }
       ctx.globalAlpha = 1;
     }
-    const glow = ctx.createLinearGradient(0, horizon - h * 0.06, 0, horizon + h * 0.02);
+    const glow = ctx.createLinearGradient(
+      0,
+      horizon - h * 0.06,
+      0,
+      horizon + h * 0.02,
+    );
     glow.addColorStop(0, "rgba(0,0,0,0)");
     glow.addColorStop(1, pal.glow);
     ctx.globalAlpha = 0.22;
@@ -833,7 +932,13 @@
       const y = roadTop + 120 + band * 1500 - zebra;
       if (y < -60 || y > h + 60) continue;
       ctx.fillStyle = "rgba(246,248,239,.5)";
-      for (let i = 0; i < 9; i++) ctx.fillRect(left + 6 + i * ((right - left) / 9), y, (right - left) / 18, 54);
+      for (let i = 0; i < 9; i++)
+        ctx.fillRect(
+          left + 6 + i * ((right - left) / 9),
+          y,
+          (right - left) / 18,
+          54,
+        );
     }
 
     const lampStep = 460;
@@ -872,7 +977,8 @@
       const y = roadTop + 40 + i * neonStep - neonOffset;
       const side = i % 2 ? 0 : 1;
       const x = side ? right + 46 : left - 150;
-      const color = pal.neon[((i % pal.neon.length) + pal.neon.length) % pal.neon.length];
+      const color =
+        pal.neon[((i % pal.neon.length) + pal.neon.length) % pal.neon.length];
       ctx.globalAlpha = 0.9;
       ctx.fillStyle = "#101c1a";
       roundRect(ctx, x, y, 104, 60, 8);
@@ -904,7 +1010,13 @@
         const r = 20 + k * 130;
         ctx.fillStyle = f.color || "#ffd85e";
         ctxLine(ctx, 2.5);
-        star(ctx, f.x + Math.cos(a) * r, f.y + Math.sin(a) * r * 0.7, 9 * (1 - k * 0.5), 5);
+        star(
+          ctx,
+          f.x + Math.cos(a) * r,
+          f.y + Math.sin(a) * r * 0.7,
+          9 * (1 - k * 0.5),
+          5,
+        );
         ctx.fill();
         ctx.stroke();
       }
@@ -954,7 +1066,8 @@
       ctxLine(ctx, 4);
       ctx.stroke();
     } else if (f.kind === "pop") {
-      const scale = k < 0.16 ? 0.66 + Math.max(0, k) * 2.1 : 1.2 - (k - 0.16) * 0.25;
+      const scale =
+        k < 0.16 ? 0.66 + Math.max(0, k) * 2.1 : 1.2 - (k - 0.16) * 0.25;
       ctx.translate(f.x, f.y);
       ctx.scale(scale, scale);
       ctx.font = "800 27px system-ui, sans-serif";
@@ -995,7 +1108,9 @@
       const c = hex.replace("#", "");
       const num = parseInt(c.length === 3 ? c.replace(/(.)/g, "$1$1") : c, 16);
       const adj = (v) =>
-        Math.round(clamp(amount < 0 ? v * (1 + amount) : v + (255 - v) * amount, 0, 255));
+        Math.round(
+          clamp(amount < 0 ? v * (1 + amount) : v + (255 - v) * amount, 0, 255),
+        );
       const r = adj((num >> 16) & 255),
         g = adj((num >> 8) & 255),
         b = adj(num & 255);

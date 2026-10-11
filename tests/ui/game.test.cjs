@@ -42,7 +42,12 @@ async function screen(name, options = {}) {
   const user =
     role === "guest"
       ? null
-      : { id: 1, name: "Driver", email: "d@example.com", is_admin: role === "admin" };
+      : {
+          id: 1,
+          name: "Driver",
+          email: "d@example.com",
+          is_admin: role === "admin",
+        };
   const requests = [];
   const errors = [];
   const virtualConsole = new VirtualConsole();
@@ -77,14 +82,46 @@ async function screen(name, options = {}) {
     let data;
     if (route === "/api/auth/me") data = user || { detail: "Sign in" };
     else if (route === "/api/cars") data = [car];
+    else if (route.startsWith("/api/cars/")) data = options.chosenCar || car;
     else if (route === "/api/rentals/summary")
       data = { completed_count: 0, total_kopecks: 0 };
     else if (route === "/api/rentals/current") data = options.current || null;
     else if (route === "/api/rentals") data = options.rentals || [];
     else throw new Error("Unexpected request: " + url);
+    if (options.missingCar && route.startsWith("/api/cars/"))
+      return {
+        ok: false,
+        status: 404,
+        json: async () => ({ detail: "Missing" }),
+      };
     return { ok: true, status: 200, json: async () => data };
   };
   vm.runInContext(read("app/static/app.js"), dom.getInternalVMContext());
+  if (options.game) {
+    if (options.storedCar)
+      w.localStorage.setItem(
+        "drive.selectedCar",
+        JSON.stringify(options.storedCar),
+      );
+    w.matchMedia = () => ({ matches: false });
+    w.requestAnimationFrame = () => 1;
+    w.HTMLCanvasElement.prototype.getContext = () => ({});
+    w.HTMLElement.prototype.scrollIntoView = () => {};
+    w.GameArt = {
+      playerCar: (_, props) => {
+        w.previewSkin = props.skin;
+      },
+    };
+    w.GameAudio = new Proxy(
+      {},
+      { get: (_, name) => (name === "setMuted" ? (value) => value : () => {}) },
+    );
+    vm.runInContext(
+      read("app/static/game-core.js"),
+      dom.getInternalVMContext(),
+    );
+    vm.runInContext(read("app/static/game.js"), dom.getInternalVMContext());
+  }
   await pause();
   return { w, requests, errors, close: () => dom.window.close() };
 }
@@ -152,7 +189,10 @@ test("reservation dialog links the mini-game to the chosen car", async () => {
       p.w.document.getElementById("reserve-drive").getAttribute("href"),
       "/drive?car=" + car.id,
     );
-    assert.equal(JSON.parse(p.w.localStorage.getItem("drive.selectedCar")).id, car.id);
+    assert.equal(
+      JSON.parse(p.w.localStorage.getItem("drive.selectedCar")).id,
+      car.id,
+    );
   } finally {
     p.close();
   }
@@ -180,10 +220,115 @@ test("mini-game assets are plain files allowed by the site CSP", () => {
     "app/templates/drive.html",
   ])
     assert.ok(fs.existsSync(file), "missing " + file);
-  const markup = read("app/templates/drive.html") + read("app/templates/base.html");
+  const markup =
+    read("app/templates/drive.html") + read("app/templates/base.html");
   assert.ok(!/style="/.test(markup), "inline style attribute breaks style-src");
-  assert.ok(!/<script/.test(read("app/templates/drive.html")), "inline script breaks script-src");
+  assert.ok(
+    !/<script/.test(read("app/templates/drive.html")),
+    "inline script breaks script-src",
+  );
   const pages = read("app/pages.py");
-  for (const name of ["game-core.js", "game-art.js", "game-audio.js", "game.js"])
+  for (const name of [
+    "game-core.js",
+    "game-art.js",
+    "game-audio.js",
+    "game.js",
+  ])
     assert.ok(pages.includes(name), "pages.py does not load " + name);
+});
+
+test("the selected rental's locked tariff wins over stale local storage and current catalog rate", async () => {
+  const p = await screen("drive", {
+    game: true,
+    query: "?car=1",
+    current: rental,
+    storedCar: { ...car, rate_kopecks: 100 },
+    chosenCar: { ...car, rate_kopecks: 1900 },
+  });
+  try {
+    const g = p.w.DriveGame;
+    assert.equal(g.state.car.rate_kopecks, 900);
+    assert.equal(p.w.previewSkin, "rio");
+    assert.match(
+      p.w.document.getElementById("intro-tariff").textContent,
+      /вашей аренды/,
+    );
+    g.start();
+    g.step(1 / 60);
+    g.hud(1 / 60);
+    assert.equal(g.state.world.car.rateKopecks, 900);
+    assert.equal(g.state.world.stats.rentalCost, 900);
+    assert.equal(g.state.world.player.cash, 4100);
+    assert.match(p.w.document.getElementById("hud-profit").textContent, /9,00/);
+    g.togglePause();
+    const pausedTime = g.state.world.time;
+    for (let i = 0; i < 1500; i++) g.step(0.05);
+    assert.equal(g.state.world.time, pausedTime);
+    assert.equal(g.state.world.stats.rentalCost, 900);
+    g.togglePause();
+    g.step(0.05);
+    assert.ok(g.state.world.time > pausedTime);
+    const other = p.w.GameCore.createRun({ seed: 1, rateKopecks: 900 });
+    assert.equal(other.stats.rentalCost, 0, "restarting must reset the bill");
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});
+
+test("selecting another catalog car changes skin, handling and tariff without using another rental", async () => {
+  const bmw = {
+    ...car,
+    id: 4,
+    brand: "BMW",
+    model: "320i",
+    category: "business",
+    rate_kopecks: 2200,
+  };
+  const p = await screen("drive", {
+    game: true,
+    query: "?car=4",
+    current: rental,
+    chosenCar: bmw,
+    storedCar: { ...car, id: 4, rate_kopecks: 100 },
+  });
+  try {
+    const g = p.w.DriveGame;
+    assert.equal(g.state.car.id, 4);
+    assert.equal(g.state.car.rate_kopecks, 2200);
+    assert.equal(p.w.previewSkin, "bmw");
+    g.start();
+    g.step(1 / 60);
+    assert.equal(g.state.world.car.skin, "bmw");
+    assert.equal(g.state.world.cls.maxSpeed, 204);
+    assert.equal(g.state.world.stats.rentalCost, 2200);
+    assert.ok(
+      p.requests.every(
+        (r) =>
+          !r.route.startsWith("/api/rentals/") ||
+          r.route === "/api/rentals/current",
+      ),
+    );
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});
+
+test("a missing selected car cannot silently start a different car", async () => {
+  const p = await screen("drive", {
+    game: true,
+    query: "?car=1234",
+    missingCar: true,
+  });
+  try {
+    assert.equal(p.w.document.getElementById("drive-start").disabled, true);
+    assert.match(
+      p.w.document.getElementById("intro-car").textContent,
+      /недоступна/,
+    );
+    assert.equal(p.w.DriveGame.state.world, null);
+  } finally {
+    p.close();
+  }
 });

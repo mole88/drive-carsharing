@@ -50,6 +50,14 @@ def cars(
     return db.scalars(query.offset(offset).limit(limit)).all()
 
 
+@router.get("/cars/{car_id}", response_model=CarOut, tags=["Автопарк"])
+def car_details(car_id: int, db: Session = Depends(get_db)):
+    car = db.get(Car, car_id)
+    if car is None:
+        raise HTTPException(404, "Автомобиль не найден")
+    return car
+
+
 @router.post(
     "/cars",
     response_model=CarOut,

@@ -15,13 +15,24 @@
           <option value="hardcore">Пикет</option>
         </select></label
       >
-      <button id="drive-sound" type="button" aria-pressed="false">Звук: вкл</button>
-      <button id="drive-calm" type="button" aria-pressed="false">Без миганий</button>
+      <button id="drive-sound" type="button" aria-pressed="false">
+        Звук: вкл
+      </button>
+      <button id="drive-calm" type="button" aria-pressed="false">
+        Без миганий
+      </button>
     </div>
   </div>
 
   <div class="drive-stage" id="drive-stage">
-    <canvas id="drive-canvas" width="900" height="1200" aria-label="Игровое поле «Ночная смена»" role="img"></canvas>
+    <canvas
+      id="drive-canvas"
+      tabindex="0"
+      width="900"
+      height="1200"
+      aria-label="Игровое поле «Ночная смена»"
+      role="img"
+    ></canvas>
 
     <div class="hud" id="hud" hidden>
       <div class="hud-row">
@@ -30,34 +41,66 @@
           <small id="hud-record" hidden></small>
         </div>
         <div class="hud-chip hud-cash">
-          <span class="hud-label">КЭШ НА ВЗЯТКУ</span><strong id="hud-cash">0 ₽</strong>
+          <span class="hud-label">КОШЕЛЁК</span
+          ><strong id="hud-cash">50 ₽</strong>
         </div>
         <div class="hud-chip hud-timer">
-          <span class="hud-label" id="hud-phase">Дворы</span><strong id="hud-time">2:30</strong>
+          <span class="hud-label" id="hud-phase">Дворы</span
+          ><strong id="hud-time">2:30</strong>
         </div>
-        <button id="touch-pause" class="touch-pause" type="button" aria-label="Пауза">II</button>
+        <button
+          id="touch-pause"
+          class="touch-pause"
+          type="button"
+          aria-label="Пауза"
+        >
+          II
+        </button>
+      </div>
+      <div class="hud-economy">
+        <span>Выручка <b id="hud-revenue">0 ₽</b></span>
+        <span>Аренда <b id="hud-rent">0 ₽</b> · <b id="hud-rate"></b></span>
+        <span>Прибыль <b id="hud-profit">0 ₽</b></span>
+        <small id="hud-debt" hidden></small>
       </div>
       <div class="hud-row hud-row-2">
-        <div class="hud-hearts" id="hud-hearts" aria-label="Целостность бампера"></div>
+        <div
+          class="hud-hearts"
+          id="hud-hearts"
+          aria-label="Целостность бампера"
+        ></div>
         <div class="hud-heat" id="hud-heat" aria-label="Уровень розыска"></div>
         <div class="hud-combo" id="hud-combo" hidden></div>
       </div>
-      <div class="hud-powers" id="hud-powers" aria-label="Активные бонусы"></div>
+      <div
+        class="hud-powers"
+        id="hud-powers"
+        aria-label="Активные бонусы"
+      ></div>
       <div class="hud-nitro">
         <div class="nitro-track"><i id="hud-nitro-fill"></i></div>
         <span class="nitro-hint">SHIFT — нитро</span>
       </div>
-      <div class="hud-speed"><strong id="hud-speed">0</strong><span>км/ч</span></div>
+      <div class="hud-speed">
+        <strong id="hud-speed">0</strong><span>км/ч</span>
+      </div>
 
       <div class="bribe-prompt" id="bribe-prompt" hidden>
         <p class="bribe-lead">ПАТРУЛЬ ТРЕБУЕТ ДОГОВОРИТЬСЯ</p>
-        <p class="bribe-cost"><strong id="bribe-cost">0 ₽</strong><span id="bribe-note">пробел</span></p>
+        <p class="bribe-cost">
+          <strong id="bribe-cost">0 ₽</strong
+          ><span id="bribe-note">пробел</span>
+        </p>
         <div class="bribe-bar"><i id="bribe-fill"></i></div>
       </div>
 
       <div class="drive-touch" id="drive-touch">
-        <button id="touch-bribe" class="touch-bribe" type="button">Дать взятку</button>
-        <button id="touch-nitro" class="touch-nitro" type="button">Нитро</button>
+        <button id="touch-bribe" class="touch-bribe" type="button">
+          Дать взятку
+        </button>
+        <button id="touch-nitro" class="touch-nitro" type="button">
+          Нитро
+        </button>
       </div>
     </div>
 
@@ -65,40 +108,75 @@
       <div class="overlay-card">
         <p class="eyebrow">САТИРИЧЕСКАЯ МИНИ-ИГРА · ВЫМЫСЕЛ · 18+</p>
         <h2 id="intro-car">Ночная смена</h2>
+        <canvas
+          id="car-preview"
+          class="car-preview"
+          width="180"
+          height="240"
+          role="img"
+          aria-label="Скин выбранного автомобиля"
+        ></canvas>
         <p id="intro-perk" class="intro-perk"></p>
+        <p id="intro-specs" class="intro-specs"></p>
+        <p id="intro-tariff" class="intro-tariff"></p>
         <div class="intro-grid">
           <div>
             <h3>Цель смены</h3>
             <p>
+              <b>Окупи тариф и выйди в плюс.</b> Стартовый кошелёк — 50 игровых
+              рублей. Победа: доехать 2:30 и получить положительную прибыль
+              после аренды, взяток, штрафов и потерь. Пауза останавливает
+              игровую аренду. Игровые деньги не списываются с реального
+              аккаунта.
+            </p>
+            <p>
               Ночной проспект живёт по своим законам: сбивайте мультяшных
-              проституток цепочками, собирайте кэш, уходите от патрулей и
-              БПЛА. Подача — карикатура: силуэты, звёзды над головой и
-              комичное «ой!», без крови и без натурализма.
+              проституток цепочками, собирайте кэш, уходите от патрулей и БПЛА.
+              Подача — карикатура: силуэты, звёзды над головой и комичное «ой!»,
+              без крови и без натурализма.
             </p>
           </div>
           <div>
             <h3>Управление</h3>
             <ul class="keys">
-              <li><kbd>A</kbd> <kbd>D</kbd> или <kbd>←</kbd> <kbd>→</kbd> — руль</li>
+              <li>
+                <kbd>A</kbd> <kbd>D</kbd> или <kbd>←</kbd> <kbd>→</kbd> — руль
+              </li>
               <li><kbd>W</kbd> / <kbd>S</kbd> — газ и тормоз</li>
               <li><kbd>ПРОБЕЛ</kbd> — взятка патрульному</li>
               <li><kbd>SHIFT</kbd> — нитро</li>
-              <li><kbd>P</kbd> — пауза, <kbd>R</kbd> — заново, <kbd>M</kbd> — звук</li>
+              <li>
+                <kbd>P</kbd> — пауза, <kbd>R</kbd> — заново, <kbd>M</kbd> — звук
+              </li>
             </ul>
           </div>
           <div>
             <h3>Как это связано</h3>
             <ul class="rules">
-              <li>Каждый сбитый силуэт поднимает <b>розыск</b>: больше звёзд — больше патрулей и БПЛА.</li>
-              <li>Кэш капает с купюр и сбитых силуэтов. Без кэша договориться не выйдет — получите протокол и минус бампер.</li>
-              <li>Взятка стоит денег, но сбрасывает розыск и даёт очки «Договорились!».</li>
-              <li>Нитро таранит патруль и сбивает БПЛА в ноль — зато розыск скачет вверх.</li>
+              <li>
+                Каждый сбитый силуэт поднимает <b>розыск</b>: больше звёзд —
+                больше патрулей и БПЛА.
+              </li>
+              <li>
+                Кэш капает с купюр и сбитых силуэтов. Без кэша договориться не
+                выйдет — получите протокол и минус бампер.
+              </li>
+              <li>
+                Взятка стоит денег, но сбрасывает розыск и даёт очки
+                «Договорились!».
+              </li>
+              <li>
+                Нитро таранит патруль и сбивает БПЛА в ноль — зато розыск скачет
+                вверх.
+              </li>
             </ul>
           </div>
         </div>
         <p class="intro-record" id="intro-record" hidden></p>
         <div class="actions">
-          <button class="primary" id="drive-start" type="button">Поехали</button>
+          <button class="primary" id="drive-start" type="button" disabled>
+            Поехали
+          </button>
           <a href="/cars">Другая машина</a>
         </div>
       </div>
@@ -109,7 +187,10 @@
         <h2>Пауза</h2>
         <p>Смена никуда не денется. Город подождёт.</p>
         <ul class="keys pause-keys">
-          <li><kbd>A</kbd> <kbd>D</kbd> — руль, <kbd>W</kbd> <kbd>S</kbd> — газ и тормоз</li>
+          <li>
+            <kbd>A</kbd> <kbd>D</kbd> — руль, <kbd>W</kbd> <kbd>S</kbd> — газ и
+            тормоз
+          </li>
           <li><kbd>ПРОБЕЛ</kbd> — взятка, <kbd>SHIFT</kbd> — нитро</li>
           <li><kbd>R</kbd> — новая смена, <kbd>M</kbd> — звук</li>
         </ul>
@@ -123,11 +204,21 @@
     <div class="overlay" id="drive-result" hidden>
       <div class="overlay-card result">
         <p class="eyebrow" id="result-kicker">СМЕНА ОКОНЧЕНА</p>
-        <div class="grade"><strong id="result-grade">A</strong><div>
-          <h2 id="result-title">Легенда района</h2>
-          <p id="result-score"></p>
-          <p class="result-stars" id="result-stars" aria-label="Медали за смену"></p>
-        </div></div>
+        <div class="grade">
+          <strong id="result-grade">A</strong>
+          <div>
+            <h2 id="result-title">Легенда района</h2>
+            <p id="result-score"></p>
+            <p class="result-profit">
+              Прибыль: <strong id="result-profit"></strong>
+            </p>
+            <p
+              class="result-stars"
+              id="result-stars"
+              aria-label="Медали за смену"
+            ></p>
+          </div>
+        </div>
         <ul class="stats" id="result-stats"></ul>
         <p class="result-note" id="result-note"></p>
         <div class="actions">

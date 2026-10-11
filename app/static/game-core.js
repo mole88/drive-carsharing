@@ -63,6 +63,128 @@
     hardcore: { spawn: 1.32, heatGain: 1.25, label: "Пикет" },
   };
 
+  const CARS = {
+    "kia rio": {
+      skin: "rio",
+      label: "Kia Rio · юркий седан",
+      maxSpeed: 162,
+      steer: 1.35,
+      mass: 0.95,
+      hearts: 5,
+      acceleration: 0.94,
+      width: 103,
+      height: 157,
+      nitroGain: 7.5,
+      color: "#f5eee1",
+      dark: "#b64148",
+      light: "#ffffff",
+      perk: "Лёгкий кузов и быстрый руль. Дешёвый тариф, быстрое накопление нитро, но всего пять бамперов.",
+    },
+    "hyundai solaris": {
+      skin: "solaris",
+      label: "Hyundai Solaris · городской спринтер",
+      maxSpeed: 170,
+      steer: 1.15,
+      mass: 1.02,
+      hearts: 6,
+      acceleration: 1.08,
+      width: 108,
+      height: 163,
+      nitroGain: 6.8,
+      color: "#78c9ee",
+      dark: "#286b99",
+      light: "#d6f3ff",
+      perk: "Разгон быстрее Rio, руль спокойнее. Шесть бамперов и умеренный тариф для ровной смены.",
+    },
+    "skoda octavia": {
+      skin: "octavia",
+      label: "Skoda Octavia · крепкий лифтбек",
+      maxSpeed: 178,
+      steer: 1.03,
+      mass: 1.15,
+      hearts: 7,
+      acceleration: 1.02,
+      width: 116,
+      height: 182,
+      nitroGain: 5.5,
+      color: "#68bb91",
+      dark: "#286650",
+      light: "#c9f5dc",
+      perk: "Длинный кузов, семь бамперов и мягче удары. Удобно собирать купюры, но аренду нужно окупить.",
+    },
+    "bmw 320i": {
+      skin: "bmw",
+      label: "BMW 320i · спортивный седан",
+      maxSpeed: 204,
+      steer: 0.9,
+      mass: 1.2,
+      hearts: 6,
+      acceleration: 1.3,
+      width: 118,
+      height: 173,
+      nitroGain: 4.5,
+      color: "#68748a",
+      dark: "#293244",
+      light: "#b8c9e5",
+      perk: "Самый быстрый разгон, широкий таран и скидка на взятки. Дорогой тариф требует высокой выручки.",
+    },
+  };
+  const DEFAULT_RATES = { economy: 900, comfort: 1400, business: 2200 };
+  const STARTING_CASH = 5000; // 50 игровых рублей; не считается выручкой.
+
+  function carProfile(car) {
+    const name = String(
+      car.carName || [car.brand, car.model].filter(Boolean).join(" "),
+    )
+      .trim()
+      .toLowerCase()
+      .replace(/\s+/g, " ");
+    const category = car.category in CLASSES ? car.category : "comfort";
+    return Object.assign(
+      {
+        acceleration: 1,
+        width: 112,
+        height: 168,
+        skin: category,
+        color: "#d5ff5f",
+        dark: "#71983b",
+        light: "#eaf5cf",
+      },
+      CLASSES[category],
+      CARS[name] || {},
+    );
+  }
+
+  function rentalCost(rateKopecks, seconds) {
+    return seconds > 0 ? Math.ceil((seconds - 1e-9) / 60) * rateKopecks : 0;
+  }
+
+  function chargeRental(world) {
+    const total = rentalCost(world.car.rateKopecks, world.time);
+    const charge = total - world.stats.rentalCost;
+    if (charge <= 0) return;
+    const paid = Math.min(world.player.cash, charge);
+    world.player.cash -= paid;
+    world.player.rentalDebt += charge - paid;
+    world.stats.rentalCost = total;
+    emit(world, "rent", { cost: charge, total });
+  }
+
+  function credit(world, baseValue) {
+    const value = Math.round(baseValue * 2.1);
+    world.stats.cashEarned += value;
+    const repaid = Math.min(world.player.rentalDebt, value);
+    world.player.rentalDebt -= repaid;
+    world.player.cash += value - repaid;
+    return value;
+  }
+
+  function profit(world) {
+    return (
+      world.stats.cashEarned - world.stats.cashSpent - world.stats.rentalCost
+    );
+  }
+
   const PHASES = [
     { name: "Дворы", until: 50, spawn: 1, tint: "dusk", bonus: 1 },
     { name: "Проспект", until: 105, spawn: 1.2, tint: "night", bonus: 1.15 },
@@ -125,17 +247,21 @@
   const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
   const lerp = (a, b, t) => a + (b - a) * t;
   const laneAt = (x) =>
-    clamp(Math.floor((x - WORLD.roadLeft) / WORLD.laneWidth), 0, WORLD.lanes - 1);
+    clamp(
+      Math.floor((x - WORLD.roadLeft) / WORLD.laneWidth),
+      0,
+      WORLD.lanes - 1,
+    );
 
   let nextId = 1;
 
   function createRun(options) {
     const cfg = options || {};
-    const cls = CLASSES[cfg.category] || CLASSES.comfort;
+    const cls = carProfile(cfg);
     const difficulty = DIFFICULTY[cfg.difficulty] || DIFFICULTY.normal;
     const world = {
-      seed: cfg.seed || (Date.now() & 0xffffff),
-      rng: rand(cfg.seed || (Date.now() & 0xffffff)),
+      seed: cfg.seed || Date.now() & 0xffffff,
+      rng: rand(cfg.seed || Date.now() & 0xffffff),
       car: {
         id: cfg.carId || 0,
         name: cfg.carName || "Драйв",
@@ -143,6 +269,11 @@
         category: cfg.category in CLASSES ? cfg.category : "comfort",
         color: cfg.color || "#d5ff5f",
         accent: cfg.accent || "#17312e",
+        skin: cls.skin,
+        rateKopecks:
+          Number.isSafeInteger(cfg.rateKopecks) && cfg.rateKopecks > 0
+            ? cfg.rateKopecks
+            : DEFAULT_RATES[cfg.category] || DEFAULT_RATES.comfort,
       },
       cls,
       difficulty,
@@ -158,6 +289,7 @@
         vipKnockdowns: 0,
         cashEarned: 0,
         cashSpent: 0,
+        rentalCost: 0,
         bribes: 0,
         failedBribes: 0,
         rams: 0,
@@ -172,12 +304,13 @@
         y: WORLD.playerY,
         vx: 0,
         speed: 70,
-        width: 112 * cls.knockWidth,
-        height: 168,
+        width: cls.width * cls.knockWidth,
+        height: cls.height,
         hearts: cls.hearts,
         maxHearts: cls.hearts,
         armor: 0,
-        cash: 500,
+        cash: STARTING_CASH,
+        rentalDebt: 0,
         nitro: 40,
         nitroTime: 0,
         invuln: 1.2,
@@ -230,7 +363,8 @@
   function spawnTarget(world, options) {
     const o = options || {};
     const rng = world.rng;
-    const lane = o.lane === undefined ? Math.floor(rng() * WORLD.lanes) : o.lane;
+    const lane =
+      o.lane === undefined ? Math.floor(rng() * WORLD.lanes) : o.lane;
     const vip = o.vip !== undefined ? o.vip : rng() < 0.08 + world.phase * 0.02;
     const fromLeft = o.fromLeft === undefined ? rng() < 0.5 : o.fromLeft;
     const y = o.y === undefined ? -140 - rng() * 420 : o.y;
@@ -288,7 +422,8 @@
       t.crossroad = true;
       t.purse = Math.round(t.purse * 0.8);
     }
-    if (world.rng() < 0.16) spawnTarget(world, { lane: (lane + 2) % WORLD.lanes, vip: true });
+    if (world.rng() < 0.16)
+      spawnTarget(world, { lane: (lane + 2) % WORLD.lanes, vip: true });
   }
 
   function spawnCop(world, pursue) {
@@ -299,7 +434,10 @@
       : Math.floor(rng() * WORLD.lanes);
     const x = WORLD.laneCenters[lane];
     const y = pursue ? -170 : -160 - rng() * 240;
-    if (world.cops.some((o) => Math.abs(o.x - x) < 120 && Math.abs(o.y - y) < 260)) return;
+    if (
+      world.cops.some((o) => Math.abs(o.x - x) < 120 && Math.abs(o.y - y) < 260)
+    )
+      return;
     const cop = {
       id: nextId++,
       x,
@@ -353,12 +491,19 @@
     const kind = kinds[Math.floor(rng() * kinds.length)];
     const lane = Math.floor(rng() * WORLD.lanes);
     const spawnY = -160 - rng() * 200;
-    if (world.props.some((s) => s.lane === lane && Math.abs(s.y - spawnY) < 520)) return;
+    if (
+      world.props.some((s) => s.lane === lane && Math.abs(s.y - spawnY) < 520)
+    )
+      return;
     const props = {
       cone: { radius: 34, damage: 0, label: "Конус" },
       oil: { radius: 58, damage: 0, label: "Масло" },
       pothole: { radius: 46, damage: RULES.damage.pothole, label: "Яма" },
-      barrier: { radius: 62, damage: RULES.damage.barrier, label: "Лежачий патрульный" },
+      barrier: {
+        radius: 62,
+        damage: RULES.damage.barrier,
+        label: "Лежачий патрульный",
+      },
     }[kind];
     world.props.push({
       id: nextId++,
@@ -374,14 +519,18 @@
   }
 
   function spawnPickup(world, kind, x, y, value) {
-    if (kind === "cash" && world.pickups.filter((p) => p.kind === "cash").length > 26) return;
+    if (
+      kind === "cash" &&
+      world.pickups.filter((p) => p.kind === "cash").length > 26
+    )
+      return;
     world.pickups.push({
       id: nextId++,
       kind,
       x,
       y,
       value: value || 0,
-      bob: Math.random() * Math.PI * 2,
+      bob: world.rng() * Math.PI * 2,
       vy: 0,
       life: kind === "cash" ? 14 : 20,
       alpha: 1,
@@ -416,7 +565,13 @@
     const lane = Math.floor(rng() * WORLD.lanes);
     if (kind === "cash") {
       for (let i = 0; i < 3; i++)
-        spawnPickup(world, "cash", WORLD.laneCenters[lane] + (i - 1) * 34, -140 - i * 66, 120);
+        spawnPickup(
+          world,
+          "cash",
+          WORLD.laneCenters[lane] + (i - 1) * 34,
+          -140 - i * 66,
+          120,
+        );
       return;
     }
     spawnPickup(
@@ -459,7 +614,7 @@
     const heat = Math.max(1, Math.round(world.player.heat));
     const escalation = 1 + RULES.bribeEscalation * world.stats.bribes;
     const raw = (RULES.bribeBase + RULES.bribePerHeat * heat) * escalation;
-    return Math.round(raw * (1 - world.cls.bribeDiscount) / 10) * 10;
+    return Math.round((raw * (1 - world.cls.bribeDiscount)) / 10) * 10;
   }
 
   function scrape(world, source) {
@@ -473,7 +628,8 @@
     const p = world.player;
     if (p.invuln > 0 || amount <= 0) return false;
     if (p.encounter && source !== "protocol") return false;
-    if (p.powers.shield > 0) {      p.powers.shield = 0;
+    if (p.powers.shield > 0) {
+      p.powers.shield = 0;
       p.invuln = 0.9;
       popText(world, "БРОНЯ УШЛА!", p.x, p.y - 120, "good");
       burst(world, "ring", p.x, p.y, { color: "#7fe3d8" });
@@ -515,7 +671,7 @@
     target.launch = 0;
     target.vy = -(360 + p.speed * 1.5);
     target.vx = clamp(p.vx * 0.5, -260, 260) + (target.x < p.x ? -140 : 140);
-    target.spinSpeed = (target.x < p.x ? -1 : 1) * (7 + Math.random() * 5);
+    target.spinSpeed = (target.x < p.x ? -1 : 1) * (7 + world.rng() * 5);
     p.chain += 1;
     p.combo = comboOf(p.chain);
     p.comboTime = Math.min(
@@ -536,7 +692,9 @@
     p.score += points;
     p.nitro = clamp(p.nitro + world.cls.nitroGain, 0, 100);
     p.heat = clamp(
-      p.heat + (target.vip ? RULES.heatPerVip : RULES.heatPerKnock) * world.difficulty.heatGain,
+      p.heat +
+        (target.vip ? RULES.heatPerVip : RULES.heatPerKnock) *
+          world.difficulty.heatGain,
       0,
       6,
     );
@@ -548,21 +706,31 @@
       spawnPickup(
         world,
         "cash",
-        target.x + (Math.random() - 0.5) * 70,
+        target.x + (world.rng() - 0.5) * 70,
         target.y - 26 - i * 44,
         Math.round(target.purse / notes),
       );
     }
-    burst(world, "stars", target.x, target.y, { count: target.vip ? 14 : 8, color: target.vip ? "#ffd85e" : "#ff9ec7" });
-    burst(world, "ring", target.x, target.y, { color: target.vip ? "#ffd85e" : "#ff7ab8" });
+    burst(world, "stars", target.x, target.y, {
+      count: target.vip ? 14 : 8,
+      color: target.vip ? "#ffd85e" : "#ff9ec7",
+    });
+    burst(world, "ring", target.x, target.y, {
+      color: target.vip ? "#ffd85e" : "#ff7ab8",
+    });
     popText(
       world,
-      target.vip ? "ЗВЕЗДА! +" + points : ["ОЙ!", "БАЦ!", "УХ!", "ЛЕТИМ!"][Math.floor(Math.random() * 4)] + " +" + points,
+      target.vip
+        ? "ЗВЕЗДА! +" + points
+        : ["ОЙ!", "БАЦ!", "УХ!", "ЛЕТИМ!"][Math.floor(world.rng() * 4)] +
+            " +" +
+            points,
       target.x,
       target.y - 40,
       target.vip ? "gold" : "good",
     );
-    if (p.combo >= 4) popText(world, "x" + p.combo + " КОМБО", p.x, p.y - 190, "combo");
+    if (p.combo >= 4)
+      popText(world, "x" + p.combo + " КОМБО", p.x, p.y - 190, "combo");
     burst(world, "shake", 0, 0, { power: target.vip ? 16 : 9 });
     emit(world, "knock", {
       x: target.x,
@@ -579,7 +747,13 @@
     const cost = bribeCost(world);
     cop.mode = "block";
     cop.alongside = 1;
-    p.encounter = { copId: cop.id, timer: RULES.bribeWindow, cost, shown: cost, pressed: false };
+    p.encounter = {
+      copId: cop.id,
+      timer: RULES.bribeWindow,
+      cost,
+      shown: cost,
+      pressed: false,
+    };
     p.chain = 0;
     p.combo = 1;
     emit(world, "encounter", { cost, x: cop.x, y: cop.y });
@@ -610,7 +784,11 @@
     }
     popText(world, "ДОГОВОРИЛИСЬ!", p.x, p.y - 200, "good");
     burst(world, "ring", p.x, p.y, { color: "#d5ff5f" });
-    emit(world, "bribe", { cost: p.encounter.cost, x: cop ? cop.x : p.x, y: cop ? cop.y : p.y });
+    emit(world, "bribe", {
+      cost: p.encounter.cost,
+      x: cop ? cop.x : p.x,
+      y: cop ? cop.y : p.y,
+    });
     p.encounter = null;
   }
 
@@ -626,7 +804,14 @@
       p.heat = clamp(p.heat - 1.4, 0, 6);
       damage(world, RULES.damage.protocol, "protocol");
       p.invuln = Math.max(p.invuln, RULES.invuln);
-      if (fine > 0) popText(world, "ПРОТОКОЛ −" + fine, p.x, p.y - 210, "bad");
+      if (fine > 0)
+        popText(
+          world,
+          "ПРОТОКОЛ −" + (fine / 100).toFixed(2) + " ₽",
+          p.x,
+          p.y - 210,
+          "bad",
+        );
       else popText(world, "ПРОТОКОЛ!", p.x, p.y - 210, "bad");
       emit(world, "protocol", { fine });
     }
@@ -651,7 +836,8 @@
     burst(world, "shake", 0, 0, { power: 20 });
     popText(world, "ВЫТЕСНИЛ! +420", cop.x, cop.y - 60, "combo");
     emit(world, "ram", { x: cop.x, y: cop.y });
-    if (p.encounter && p.encounter.copId === cop.id) closeEncounter(world, true);
+    if (p.encounter && p.encounter.copId === cop.id)
+      closeEncounter(world, true);
   }
 
   function updatePlayer(world, dt, input) {
@@ -659,13 +845,17 @@
     const cls = world.cls;
     const i = input || {};
     let steerAxis = clamp(
-      (i.right ? 1 : 0) - (i.left ? 1 : 0) + (typeof i.steer === "number" ? i.steer : 0),
+      (i.right ? 1 : 0) -
+        (i.left ? 1 : 0) +
+        (typeof i.steer === "number" ? i.steer : 0),
       -1,
       1,
     );
     if (p.spin > 0) steerAxis = -steerAxis + (p.spinDir || 1) * 0.5;
     const throttle = clamp(
-      (i.fast ? 1 : 0) - (i.slow ? 1 : 0) + (typeof i.throttle === "number" ? i.throttle : 0),
+      (i.fast ? 1 : 0) -
+        (i.slow ? 1 : 0) +
+        (typeof i.throttle === "number" ? i.throttle : 0),
       -1,
       1,
     );
@@ -674,7 +864,8 @@
     const ceiling = cls.maxSpeed * (nitroOn ? 1.22 : 1);
     const cruise = cls.maxSpeed * 0.52;
     if (p.spin > 0) p.spin -= dt;
-    if (throttle > 0.05) p.speed += (70 + 90 * throttle) * dt;
+    if (throttle > 0.05)
+      p.speed += (70 + 90 * throttle) * cls.acceleration * dt;
     else if (throttle < -0.05) p.speed -= 130 * dt;
     else p.speed += (cruise - p.speed) * 0.55 * dt;
     p.speed = clamp(p.speed, nitroOn ? ceiling * 0.8 : 42, ceiling);
@@ -704,8 +895,13 @@
         scrape(world, "curb");
       } else p.vx = -Math.abs(p.vx) * 0.25;
     }
-    p.tilt = lerp(p.tilt, clamp(p.vx / maxVx, -1, 1) * 0.24, 1 - Math.pow(0.001, dt));
-    p.bounce = Math.sin(world.time * (9 + p.speed / 26)) * (0.6 + p.speed / 260);
+    p.tilt = lerp(
+      p.tilt,
+      clamp(p.vx / maxVx, -1, 1) * 0.24,
+      1 - Math.pow(0.001, dt),
+    );
+    p.bounce =
+      Math.sin(world.time * (9 + p.speed / 26)) * (0.6 + p.speed / 260);
 
     const scroll = p.speed * WORLD.pxPerKmh;
     world.stats.distance += (p.speed / 3600) * dt * 1.9;
@@ -730,13 +926,18 @@
     if (p.comboTime > 0) {
       p.comboTime -= dt;
       if (p.comboTime <= 0) {
-        if (p.chain > 3) popText(world, "КОМБО ПОТЕРЯНО", p.x, p.y - 160, "bad");
+        if (p.chain > 3)
+          popText(world, "КОМБО ПОТЕРЯНО", p.x, p.y - 160, "bad");
         p.chain = 0;
         p.combo = 1;
       }
     }
     const idle = world.time - p.lastKnock > RULES.heatIdleAfter;
-    const drift = p.encounter ? 0 : idle ? RULES.heatDecayIdle : RULES.heatDecay;
+    const drift = p.encounter
+      ? 0
+      : idle
+        ? RULES.heatDecayIdle
+        : RULES.heatDecay;
     p.heat = clamp(p.heat - drift * dt, 0, 6);
     return scroll;
   }
@@ -755,24 +956,31 @@
         t.spin += t.spinSpeed * dt;
         t.scale = clamp(t.scale - dt * 0.55, 0.2, 1);
         t.alpha = clamp(1 - (t.launch - 0.55) / 0.6, 0, 1);
-        if (t.alpha <= 0.02 || t.y > WORLD.height + 260) world.targets.splice(k, 1);
+        if (t.alpha <= 0.02 || t.y > WORLD.height + 260)
+          world.targets.splice(k, 1);
         continue;
       }
       if (t.y < p.y - 60) t.y += scroll * dt;
       if (t.crossroad) {
         t.x += t.dir * t.speed * dt;
         if (t.pauseTimer > 0) t.pauseTimer -= dt;
-        else if (Math.random() < dt * 0.12 && t.x > WORLD.roadLeft && t.x < WORLD.roadRight)
-          t.pauseTimer = 0.5 + Math.random() * 0.7;
+        else if (
+          world.rng() < dt * 0.12 &&
+          t.x > WORLD.roadLeft &&
+          t.x < WORLD.roadRight
+        )
+          t.pauseTimer = 0.5 + world.rng() * 0.7;
         if (t.x < WORLD.roadLeft - 6 || t.x > WORLD.roadRight + 6) {
           t.dir *= -1;
           t.x = clamp(t.x, WORLD.roadLeft - 6, WORLD.roadRight + 6);
-          t.lane = (t.lane + 1 + Math.floor(Math.random() * 2)) % WORLD.lanes;
-          t.y -= 40 + Math.random() * 60;
+          t.lane = (t.lane + 1 + Math.floor(world.rng() * 2)) % WORLD.lanes;
+          t.y -= 40 + world.rng() * 60;
         }
       } else {
-        t.x += (t.laneTargetX - t.x) * Math.min(1, dt * 1.6) + Math.sin(t.stride * 0.4) * 6 * dt;
-        if (Math.abs(t.laneTargetX - t.x) < 16 && Math.random() < dt * 0.08) {
+        t.x +=
+          (t.laneTargetX - t.x) * Math.min(1, dt * 1.6) +
+          Math.sin(t.stride * 0.4) * 6 * dt;
+        if (Math.abs(t.laneTargetX - t.x) < 16 && world.rng() < dt * 0.08) {
           t.lane = (t.lane + (t.dir > 0 ? 1 : -1) + WORLD.lanes) % WORLD.lanes;
           t.laneTargetX = WORLD.laneCenters[t.lane];
         }
@@ -802,13 +1010,18 @@
         c.y += (scroll * 0.55 + 220) * dt;
         c.x += (c.x < p.x ? -160 : 160) * dt;
         c.alpha -= dt * 0.7;
-        if (c.alpha <= 0.05 || c.y > WORLD.height + 220) world.cops.splice(k, 1);
+        if (c.alpha <= 0.05 || c.y > WORLD.height + 220)
+          world.cops.splice(k, 1);
         continue;
       }
       if (c.mode === "block" && p.encounter && p.encounter.copId === c.id) {
         const side = c.x < p.x ? -1 : 1;
         const gap = (p.width + c.width) * 0.8;
-        const targetX = clamp(p.x + side * gap, WORLD.roadLeft + c.width / 2, WORLD.roadRight - c.width / 2);
+        const targetX = clamp(
+          p.x + side * gap,
+          WORLD.roadLeft + c.width / 2,
+          WORLD.roadRight - c.width / 2,
+        );
         c.x += (targetX - c.x) * Math.min(1, dt * 5);
         c.y += (p.y - 112 - c.y) * Math.min(1, dt * 4);
         c.alongside = 1;
@@ -816,7 +1029,8 @@
         p.vx *= Math.pow(0.02, dt);
         p.encounter.timer -= dt;
         if ((input || {}).bribe) payBribe(world);
-        else if (p.encounter && p.encounter.timer <= 0) closeEncounter(world, false);
+        else if (p.encounter && p.encounter.timer <= 0)
+          closeEncounter(world, false);
         continue;
       }
       if (c.mode === "pursue") {
@@ -888,9 +1102,8 @@
           if (p.nitroTime > 0) {
             world.stats.dronesDown += 1;
             p.score += 520;
-            p.cash += 180;
-            world.stats.cashEarned += 180;
-            if (p.hearts < p.maxHearts && Math.random() < 0.4) {
+            credit(world, 180);
+            if (p.hearts < p.maxHearts && world.rng() < 0.4) {
               p.hearts += 1;
               popText(world, "ЗАПЧАСТИ +1 БАМПЕР", d.x, d.y - 76, "good");
             } else popText(world, "БПЛА СБИТ! +520", d.x, d.y - 40, "gold");
@@ -907,7 +1120,14 @@
             const lost = Math.round(p.cash * 0.18);
             p.cash -= lost;
             world.stats.cashSpent += lost;
-            if (lost > 0) popText(world, "−" + lost + " ₽", p.x, p.y - 170, "bad");
+            if (lost > 0)
+              popText(
+                world,
+                "−" + (lost / 100).toFixed(2) + " ₽",
+                p.x,
+                p.y - 170,
+                "bad",
+              );
           } else {
             world.stats.dodges += 0;
             popText(world, "ЕСТЬ!", p.x, p.y - 150, "bad");
@@ -953,7 +1173,7 @@
           if (p.nitroTime <= 0) {
             p.spin = 0.85;
             p.spinDir = p.vx >= 0 ? 1 : -1;
-            p.vx += (Math.random() < 0.5 ? -1 : 1) * 320;
+            p.vx += (world.rng() < 0.5 ? -1 : 1) * 320;
             popText(world, "ЗАНЕСЛО!", p.x, p.y - 150, "bad");
             emit(world, "spin", {});
           }
@@ -974,7 +1194,8 @@
 
   function updatePickups(world, dt, scroll) {
     const p = world.player;
-    const magnet = p.powers.magnet > 0 ? world.cls.magnet * 2.4 : world.cls.magnet;
+    const magnet =
+      p.powers.magnet > 0 ? world.cls.magnet * 2.4 : world.cls.magnet;
     for (let k = world.pickups.length - 1; k >= 0; k--) {
       const q = world.pickups[k];
       q.y += scroll * dt * (q.kind === "cash" ? 1 : 0.9);
@@ -1001,12 +1222,11 @@
     const p = world.player;
     if (q.kind === "cash") {
       const value = Math.max(20, Math.round(q.value * (1 + p.combo * 0.06)));
-      p.cash += value;
-      world.stats.cashEarned += value;
+      const income = credit(world, value);
       p.nitro = clamp(p.nitro + 2.4, 0, 100);
       p.score += Math.round(value * 0.6);
       burst(world, "coins", q.x, q.y, { count: 5 });
-      emit(world, "cash", { value, x: q.x, y: q.y });
+      emit(world, "cash", { value: income, x: q.x, y: q.y });
       return;
     }
     if (q.kind === "nitro") {
@@ -1017,9 +1237,14 @@
         p.hearts += 1;
         popText(world, "БАМПЕР ЦЕЛ", q.x, q.y - 30, "good");
       } else {
-        p.cash += 250;
-        world.stats.cashEarned += 250;
-        popText(world, "ЗАПЧАСТИ +250₽", q.x, q.y - 30, "gold");
+        const income = credit(world, 250);
+        popText(
+          world,
+          "ЗАПЧАСТИ +" + (income / 100).toFixed(2) + "₽",
+          q.x,
+          q.y - 30,
+          "gold",
+        );
       }
     } else if (q.kind === "magnet") {
       p.powers.magnet = RULES.powerupTime;
@@ -1050,37 +1275,37 @@
     t.target -= dt * rate;
     if (t.target <= 0 && world.targets.length < 9) {
       crowd(world);
-      t.target = 1.8 + Math.random() * 1.4 - heat * 0.05;
+      t.target = 1.8 + world.rng() * 1.4 - heat * 0.05;
     }
     t.cash -= dt * (1 + phase.index * 0.1);
     if (t.cash <= 0) {
       cashCluster(world);
-      t.cash = 2.2 + Math.random() * 1.6;
+      t.cash = 2.2 + world.rng() * 1.6;
     }
     t.power -= dt;
     if (t.power <= 0) {
       powerDrop(world);
-      t.power = 8 + Math.random() * 5;
+      t.power = 8 + world.rng() * 5;
     }
     if (warm) {
       t.prop -= dt * rate;
       if (t.prop <= 0 && world.props.length < 4) {
         spawnProp(world);
-        t.prop = 2.6 + Math.random() * 2.4 - phase.index * 0.2;
+        t.prop = 2.6 + world.rng() * 2.4 - phase.index * 0.2;
       }
       if (phase.index >= 1 || heat >= 2) {
         t.drone -= dt * rate * (0.7 + heat * 0.22);
         if (t.drone <= 0) {
           spawnDrone(world);
-          t.drone = 6.5 + Math.random() * 4;
+          t.drone = 6.5 + world.rng() * 4;
         }
       }
     }
     if (heat >= 1) {
       t.cop -= dt * rate * (0.6 + heat * 0.32);
       if (t.cop <= 0) {
-        spawnCop(world, heat >= 3 && Math.random() < 0.6);
-        t.cop = 5 + Math.random() * 3;
+        spawnCop(world, heat >= 3 && world.rng() < 0.6);
+        t.cop = 5 + world.rng() * 3;
       }
     } else if (world.cops.length && heat < 0.6) t.cop = Math.max(t.cop, 2);
   }
@@ -1091,8 +1316,11 @@
   }
 
   function finish(world, reason) {
+    if (world.result) return world.result;
+    chargeRental(world);
     const p = world.player;
-    world.status = world.status === "wrecked" ? "wrecked" : reason || "shift_end";
+    world.status =
+      world.status === "wrecked" ? "wrecked" : reason || "shift_end";
     const bonus =
       world.status === "shift_end"
         ? Math.round(p.cash * 0.5 + p.hearts * 600 + (p.heat < 1 ? 500 : 0))
@@ -1106,6 +1334,15 @@
       title: g.title,
       score: p.score,
       cash: p.cash,
+      startingCash: STARTING_CASH,
+      revenue: world.stats.cashEarned,
+      expenses: world.stats.cashSpent,
+      rentalCost: world.stats.rentalCost,
+      rentalDebt: p.rentalDebt,
+      profit: profit(world),
+      rateKopecks: world.car.rateKopecks,
+      profitable: profit(world) > 0,
+      won: world.status === "shift_end" && profit(world) > 0,
       bonus,
       knockdowns: world.stats.knockdowns,
       vip: world.stats.vipKnockdowns,
@@ -1118,18 +1355,27 @@
       distance: world.stats.distance,
       topSpeed: Math.round(world.stats.topSpeed),
       time: Math.round(world.time),
-      stars: p.score >= 50000 ? 3 : p.score >= 32000 ? 2 : p.score >= 18000 ? 1 : 0,
+      stars:
+        p.score >= 50000 ? 3 : p.score >= 32000 ? 2 : p.score >= 18000 ? 1 : 0,
     };
     emit(world, "finished", { reason: world.status });
   }
 
   function step(world, dt, input) {
     if (world.status !== "running") return world;
-    const frame = Math.min(dt, 0.05);
+    const frame = Math.max(0, Math.min(dt, 0.05, world.shift - world.time));
     world.time += frame;
-    world.stats.bestChain = Math.max(world.stats.bestChain || 0, world.player.chain);
+    chargeRental(world);
+    world.stats.bestChain = Math.max(
+      world.stats.bestChain || 0,
+      world.player.chain,
+    );
     const input2 = input || {};
-    if (input2.nitro && world.player.nitro >= RULES.nitroCost && world.player.nitroTime <= 0) {
+    if (
+      input2.nitro &&
+      world.player.nitro >= RULES.nitroCost &&
+      world.player.nitroTime <= 0
+    ) {
       world.player.nitroTime = RULES.nitroTime;
       world.player.speed += 24;
       popText(world, "НИТРО!", world.player.x, world.player.y - 200, "gold");
@@ -1155,13 +1401,19 @@
       if (f.life >= f.ttl) world.fx.splice(k, 1);
     }
     if (world.status === "wrecked" && !world.result) finish(world, "wrecked");
-    else if (world.time >= world.shift && !world.result) finish(world, "shift_end");
+    else if (world.time >= world.shift && !world.result)
+      finish(world, "shift_end");
     return world;
   }
 
   global.GameCore = {
     WORLD,
     CLASSES,
+    CARS,
+    STARTING_CASH,
+    carProfile,
+    rentalCost,
+    profit,
     DIFFICULTY,
     PHASES,
     RULES,

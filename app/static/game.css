@@ -22,6 +22,10 @@
 .touch-pause:hover{background:#17312e}
 .hud-cash strong{color:#8fe3a8;transition:transform .12s ease-out,color .25s}
 .hud-cash.pulse strong{color:#d5ff5f;transform:scale(1.16)}
+.hud-economy{display:flex;flex-wrap:wrap;gap:4px 12px;padding:6px 10px;background:#0e1f1bdd;border-radius:10px;font-size:11px;color:#c6d5c3;font-variant-numeric:tabular-nums}
+.hud-economy b{color:#a5ffef}.hud-economy .loss,.result-profit .loss{color:#ff9e9e}.hud-economy small{color:#ff9e9e;flex-basis:100%}
+.intro-specs{font-size:12px!important;color:#a5ffef!important}.intro-tariff{border:1px solid #806e37;border-radius:10px;padding:10px;color:#ffe495!important}.result .result-profit strong{font-size:24px;color:#a5ffef}
+.car-preview{float:right;width:84px;height:112px;margin:0 0 8px 12px;background:#244035;border-radius:12px}.intro-grid{clear:both}
 .hud-hearts i{width:22px;height:22px;border-radius:7px;background:#d5ff5f;border:2px solid #17312e;display:block;transform:rotate(45deg);box-shadow:0 0 12px #d5ff5f55}
 .hud-hearts i.lost{background:#2b4038;box-shadow:none;opacity:.55}
 .hud-hearts i.hurt{background:#ff9d4d;box-shadow:0 0 12px #ff9d4d66}
