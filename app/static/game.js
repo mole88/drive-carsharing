@@ -55,6 +55,18 @@
 
   const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
   const depth = (y) => 0.8 + 0.36 * clamp(y / W.height, 0, 1);
+  function worldPop(world, text, x, y, tone, ttl, delay) {
+    world.fx.push({
+      kind: "pop",
+      text,
+      x,
+      y,
+      tone: tone || "gold",
+      life: -(delay || 0),
+      ttl: ttl || 1.1,
+      vy: -110,
+    });
+  }
   const money = (kopecks) =>
     new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 0 }).format(kopecks) + " ₽";
 
@@ -319,6 +331,12 @@
       if (world.attract) continue;
       const sfx = SFX_BY_EVENT[e.type];
       if (sfx) audio.sfx(sfx);
+      if (e.type === "cash") {
+        const chip = document.querySelector(".hud-cash");
+        chip.classList.add("pulse");
+        clearTimeout(state.cashTimer);
+        state.cashTimer = setTimeout(() => chip.classList.remove("pulse"), 220);
+      }
       if (e.type === "knock") {
         state.hitStop = e.vip ? 0.07 : 0.045;
         if (!state.calm) state.shake = Math.min(26, state.shake + (e.vip ? 16 : 9));
@@ -392,7 +410,15 @@
     if (state.flash > 0) state.flash -= dt * 2;
     const shakeX = state.calm ? 0 : (Math.random() - 0.5) * state.shake;
     const shakeY = state.calm ? 0 : (Math.random() - 0.5) * state.shake;
-    ctx.setTransform(view.scale, 0, 0, view.scale, view.ox + shakeX, view.oy + shakeY);
+    const zoom = world.player.nitroTime > 0 ? 0.965 : 1;
+    ctx.setTransform(
+      view.scale * zoom,
+      0,
+      0,
+      view.scale * zoom,
+      view.ox * zoom + shakeX + (view.w * (1 - zoom)) / 2,
+      view.oy * zoom + shakeY + (view.h * (1 - zoom)) / 2,
+    );
 
     const phase = core.phaseInfo(world);
     art.background(ctx, {
@@ -468,6 +494,22 @@
             shield: o.powers.shield > 0,
             time,
           });
+        if (o.combo > 1 && o.comboTime > 0) {
+          const ratio = clamp(o.comboTime / core.RULES.comboWindowMax, 0, 1);
+          ctx.save();
+          ctx.translate(o.x, o.y);
+          ctx.scale(scale, scale);
+          ctx.lineWidth = 7;
+          ctx.strokeStyle = "rgba(255,216,94,.28)";
+          ctx.beginPath();
+          ctx.arc(0, 0, 96, 0, Math.PI * 2);
+          ctx.stroke();
+          ctx.strokeStyle = ratio > 0.35 ? "#ffd85e" : "#ff7a7a";
+          ctx.beginPath();
+          ctx.arc(0, 0, 96, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * ratio);
+          ctx.stroke();
+          ctx.restore();
+        }
       }
     }
 
@@ -475,6 +517,7 @@
       if (d.state === "lock") art.droneTarget(ctx, d, world.player.y, "#ff4d5e");
 
     for (const f of world.fx) {
+      if (f.life < 0) continue;
       if (f.kind === "shake") {
         if (!f.applied && !state.calm) {
           f.applied = true;
@@ -540,6 +583,13 @@
     if (!world) return;
     const p = world.player;
     $("hud-score").textContent = Math.round(p.score).toLocaleString("ru-RU");
+    if (state.recordScore && !state.recordBeaten && p.score > state.recordScore) {
+      state.recordBeaten = true;
+      document.querySelector(".hud-score").classList.add("beat");
+      $("hud-record").textContent = "рекорд побит!";
+      worldPop(world, "НОВЫЙ РЕКОРД!", W.width / 2, 430, "gold", 1.6);
+      audio.sfx("vip");
+    }
     $("hud-cash").textContent = money(p.cash);
     const left = Math.max(0, world.shift - world.time);
     $("hud-time").textContent =
@@ -563,11 +613,17 @@
     }
     const stars = Math.round(p.heat);
     if (state.shownHeat !== stars) {
+      if (stars > state.shownHeat && stars >= 2 && state.mode === "playing")
+        worldPop(world, "РОЗЫСК " + stars + "★", W.width / 2, 400, "bad", 1.2);
       state.shownHeat = stars;
       $("hud-heat").innerHTML = Array.from({ length: 6 }, (_, i) =>
         `<i class="${i < stars ? "on" : ""}">★</i>`,
       ).join("");
       $("hud-heat").classList.toggle("alarm", stars >= 5 && !state.calm);
+    }
+    if (left <= 10 && !state.finalCall && !world.attract) {
+      state.finalCall = true;
+      worldPop(world, "ФИНАЛ — 10 СЕКУНД", W.width / 2, 380, "gold", 1.6);
     }
     const combo = $("hud-combo");
     if (p.combo > 1) {
@@ -645,6 +701,19 @@
     state.shownHearts = -1;
     state.shownHeat = -1;
     setMode("playing");
+    const p = state.world.player;
+    ["3", "2", "1"].forEach((digit, i) =>
+      worldPop(state.world, digit, p.x, p.y - 230, "gold", 0.45, i * 0.4),
+    );
+    worldPop(state.world, "ПОЕХАЛИ!", p.x, p.y - 230, "combo", 1.1, 1.25);
+    state.finalCall = false;
+    const best = records().cars["car" + state.world.car.id];
+    state.recordScore = best ? best.best : 0;
+    state.recordBeaten = false;
+    const recordEl = $("hud-record");
+    recordEl.hidden = !state.recordScore;
+    recordEl.textContent = state.recordScore ? "рекорд " + state.recordScore.toLocaleString("ru-RU") : "";
+    document.querySelector(".hud-score").classList.remove("beat");
     audio.music(true);
     audio.sfx("start");
     canvas.focus();
@@ -679,7 +748,7 @@
     const isBest = saveRecord(world.car.id, result);
     $("result-kicker").textContent =
       reason === "wrecked"
-        ? "БАМПЕР ДОЖИЛ СВОЙ"
+        ? "БАМПЕР ДОЕЗДИЛСЯ"
         : reason === "quit"
           ? "СМЕНА ПРЕРВАНА"
           : "СМЕНА ЗАКРЫТА";

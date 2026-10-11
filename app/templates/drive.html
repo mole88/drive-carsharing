@@ -27,6 +27,7 @@
       <div class="hud-row">
         <div class="hud-chip hud-score">
           <span class="hud-label">ОЧКИ</span><strong id="hud-score">0</strong>
+          <small id="hud-record" hidden></small>
         </div>
         <div class="hud-chip hud-cash">
           <span class="hud-label">КЭШ НА ВЗЯТКУ</span><strong id="hud-cash">0 ₽</strong>
@@ -107,6 +108,11 @@
       <div class="overlay-card narrow">
         <h2>Пауза</h2>
         <p>Смена никуда не денется. Город подождёт.</p>
+        <ul class="keys pause-keys">
+          <li><kbd>A</kbd> <kbd>D</kbd> — руль, <kbd>W</kbd> <kbd>S</kbd> — газ и тормоз</li>
+          <li><kbd>ПРОБЕЛ</kbd> — взятка, <kbd>SHIFT</kbd> — нитро</li>
+          <li><kbd>R</kbd> — новая смена, <kbd>M</kbd> — звук</li>
+        </ul>
         <div class="actions">
           <button class="primary" id="resume" type="button">Продолжить</button>
           <button id="quit" type="button">Закончить смену</button>

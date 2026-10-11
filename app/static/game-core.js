@@ -92,7 +92,7 @@
     bribeBase: 320,
     bribePerHeat: 240,
     bribeEscalation: 0.08,
-    bribeWindow: 1.35,
+    bribeWindow: 1.5,
     droneLock: 1.35,
     droneHover: 0.9,
     nitroCost: 34,

@@ -191,18 +191,18 @@
       ctx.fill();
     }
 
+    ctx.fillStyle = "rgba(18,36,31,.26)";
+    roundRect(ctx, -w * 0.44, h * 0.33, w * 0.88, h * 0.1, 8);
+    ctx.fill();
     ctx.fillStyle = "#f6f8ef";
-    roundRect(ctx, -w * 0.16, h * 0.26, w * 0.32, 22, 6);
+    roundRect(ctx, -w * 0.28, h * 0.25, w * 0.56, 24, 6);
     ctx.fill();
     ctx.stroke();
-    ctx.fillStyle = "rgba(18,36,31,.28)";
-    roundRect(ctx, -w * 0.44, h * 0.34, w * 0.88, h * 0.09, 8);
-    ctx.fill();
     ctx.fillStyle = INK;
-    ctx.font = "700 15px system-ui, sans-serif";
+    ctx.font = "700 12px system-ui, sans-serif";
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
-    ctx.fillText((o.plate || "ДРАЙВ").slice(0, 9), 0, h * 0.26 + 12);
+    ctx.fillText((o.plate || "ДРАЙВ").slice(0, 9), 0, h * 0.25 + 13);
 
     if (o.shield) {
       ctx.strokeStyle = "#7fe3d8";
@@ -897,7 +897,7 @@
   function fx(ctx, f, time) {
     const k = f.life / f.ttl;
     ctx.save();
-    ctx.globalAlpha = Math.max(0, 1 - k);
+    ctx.globalAlpha = clamp(1 - k, 0, 1);
     if (f.kind === "stars") {
       for (let i = 0; i < (f.count || 8); i++) {
         const a = (i / (f.count || 8)) * Math.PI * 2 + k * 3;
@@ -954,7 +954,7 @@
       ctxLine(ctx, 4);
       ctx.stroke();
     } else if (f.kind === "pop") {
-      const scale = k < 0.16 ? 0.6 + k * 4 : 1.2 - (k - 0.16) * 0.25;
+      const scale = k < 0.16 ? 0.66 + Math.max(0, k) * 2.1 : 1.2 - (k - 0.16) * 0.25;
       ctx.translate(f.x, f.y);
       ctx.scale(scale, scale);
       ctx.font = "800 27px system-ui, sans-serif";
