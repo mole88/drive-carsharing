@@ -502,7 +502,7 @@ test("the selected rental's locked tariff wins over stale local storage and curr
       p.w.document.getElementById("intro-tariff").textContent,
       /1,5 с игры = 1 мин поездки/,
     );
-    g.start();
+    await g.start();
     g.step(1 / 60);
     g.hud(1 / 60);
     assert.equal(g.state.world.car.rateKopecks, 900);
@@ -525,7 +525,7 @@ test("the selected rental's locked tariff wins over stale local storage and curr
   }
 });
 
-test("the exact rental selects its car and autostarts", async () => {
+test("the exact rental selects its car and waits for the briefing confirmation", async () => {
   const bmw = {
     ...car,
     id: 4,
@@ -543,6 +543,14 @@ test("the exact rental selects its car and autostarts", async () => {
   });
   try {
     const g = p.w.DriveGame;
+    assert.equal(g.state.mode, "intro");
+    assert.equal(p.w.document.getElementById("drive-intro").hidden, false);
+    const time = g.state.world.time;
+    assert.equal(g.state.world.attract, true);
+    assert.equal(g.state.world.stats.rentalCost, 0);
+    assert.equal(time, 0);
+    p.w.document.getElementById("drive-start").click();
+    await pause();
     assert.equal(g.state.mode, "playing");
     assert.equal(g.state.world.car.id, 4);
     assert.equal(g.state.world.car.rateKopecks, 2100);
@@ -582,7 +590,7 @@ test("the HUD shows pressure instead of a shift countdown", async () => {
   try {
     const d = p.w.document;
     const g = p.w.DriveGame;
-    g.start();
+    await g.start();
     g.step(1 / 60);
     g.hud(1 / 60);
     assert.equal(d.getElementById("hud-level").textContent, "1");
@@ -652,7 +660,7 @@ test("смена предупреждает, что приносит новый 
     const g = p.w.DriveGame;
     const core = p.w.GameCore;
     const last = core.PHASES[core.PHASES.length - 1];
-    g.start();
+    await g.start();
     g.step(1 / 60);
     const world = g.state.world;
     world.player.cash = 1e9;
@@ -685,7 +693,7 @@ test("the run posts a score the leaderboard service accepts", async () => {
   });
   try {
     const g = p.w.DriveGame;
-    g.start();
+    await g.start();
     const world = g.state.world;
     world.time = 240;
     world.player.score = 400000;
@@ -748,7 +756,7 @@ test("место недели не ломает экран, если лидер�
   });
   try {
     const g = p.w.DriveGame;
-    g.start();
+    await g.start();
     const world = g.state.world;
     world.time = 240;
     world.player.score = 400000;
@@ -777,6 +785,7 @@ test("short runs still complete the rental", async () => {
   const p = await screen("drive", { game: true, query: "?rental=7" });
   try {
     const g = p.w.DriveGame;
+    await g.start();
     g.state.world.time = 4;
     g.quitShift();
     await pause();
@@ -817,7 +826,7 @@ test("пауза называет цену возврата и язык упра
   try {
     const d = p.w.document,
       g = p.w.DriveGame;
-    g.start();
+    await g.start();
     const world = g.state.world;
     world.time = 90;
     world.player.hearts = 5;
@@ -868,7 +877,7 @@ test("пауза называет цену возврата и язык упра
   });
   try {
     const g = phone.w.DriveGame;
-    g.start();
+    await g.start();
     g.togglePause();
     const help = phone.w.document.getElementById("pause-help").textContent;
     assert.match(help, /пальцем/, "телефону нужна сенсорная легенда: " + help);
@@ -933,6 +942,7 @@ test("промпт взятки учит длине первое окно", asyn
   try {
     const g = p.w.DriveGame;
     const d = p.w.document;
+    await g.start();
     const w = g.state.world;
     w.player.encounter = {
       copId: 1,
@@ -984,6 +994,7 @@ test("на телефоне промпт зовёт на кнопку «Взят
   try {
     const g = p.w.DriveGame;
     const d = p.w.document;
+    await g.start();
     const w = g.state.world;
     w.player.encounter = {
       copId: 1,
@@ -1016,6 +1027,7 @@ test("экран итогов называет, что именно законч
   const p = await screen("drive", { game: true, query: "?rental=7" });
   try {
     const g = p.w.DriveGame;
+    await g.start();
     const world = g.state.world;
     world.time = 40;
     world.player.hearts = 1;
@@ -1100,6 +1112,7 @@ test("completion retries keep the same result and reload restores a paused run",
   let saved;
   try {
     const g = p.w.DriveGame;
+    await g.start();
     g.state.world.time = 12;
     g.state.world.player.hearts = 3;
     g.togglePause(true);
@@ -1126,6 +1139,8 @@ test("completion retries keep the same result and reload restores a paused run",
     savedRun: saved,
   });
   try {
+    assert.equal(resumed.w.DriveGame.state.mode, "intro");
+    await resumed.w.DriveGame.start();
     assert.equal(resumed.w.DriveGame.state.world.player.hearts, 3);
     assert.equal(resumed.w.DriveGame.state.world.time, 12);
     resumed.w.DriveGame.step(0.05);
@@ -1330,7 +1345,7 @@ test("touch actions fire once, capture a drag and suppress text selection menus"
   });
   try {
     const g = p.w.DriveGame;
-    g.start();
+    await g.start();
     for (const [id, prop, action] of [
       ["touch-nitro", "touchNitro", "nitro"],
       ["touch-bribe", "touchBribe", "bribe"],
@@ -1373,17 +1388,18 @@ test("game keeps an active trip alive and stops heartbeat after completion", asy
       p.requests.filter((r) => r.route.endsWith("/heartbeat"));
     assert.equal(beats().length, 1);
     assert.equal(beats()[0].options.method, "POST");
+    await p.w.DriveGame.start();
     p.w.DriveGame.togglePause(true);
     p.w.document.dispatchEvent(new p.w.Event("visibilitychange"));
     await pause();
-    assert.equal(beats().length, 2, "visible paused game retains its lease");
+    assert.equal(beats().length, 3, "visible paused game retains its lease");
     Object.defineProperty(p.w.document, "hidden", {
       configurable: true,
       value: true,
     });
     p.w.document.dispatchEvent(new p.w.Event("visibilitychange"));
     await pause();
-    assert.equal(beats().length, 2, "hidden page does not keep a car occupied");
+    assert.equal(beats().length, 3, "hidden page does not keep a car occupied");
     Object.defineProperty(p.w.document, "hidden", {
       configurable: true,
       value: false,
@@ -1392,7 +1408,7 @@ test("game keeps an active trip alive and stops heartbeat after completion", asy
     await pause();
     p.w.document.dispatchEvent(new p.w.Event("visibilitychange"));
     await pause();
-    assert.equal(beats().length, 2);
+    assert.equal(beats().length, 3);
     assert.equal(p.w.DriveGame.state.rental.status, "completed");
     assert.deepEqual(p.errors, []);
   } finally {
@@ -1408,6 +1424,7 @@ test("an expired lease prevents playing while a brief outage permits retry", asy
       failHeartbeat: status,
     });
     try {
+      await p.w.DriveGame.start();
       assert.equal(
         p.w.DriveGame.state.mode,
         status === 409 ? "intro" : "playing",
@@ -1427,5 +1444,76 @@ test("an expired lease prevents playing while a brief outage permits retry", asy
     } finally {
       p.close();
     }
+  }
+});
+
+test("briefing keeps its original loop until an explicit start, on desktop and touch", async () => {
+  for (const touch of [false, true]) {
+    const p = await screen("drive", { game: true, query: "?rental=7", touch });
+    try {
+      const d = p.w.document;
+      const g = p.w.DriveGame;
+      const loopCalls = () => p.audioCalls.filter(([name]) => name === "loop");
+      assert.equal(g.state.mode, "intro");
+      assert.equal(d.getElementById("drive-intro").hidden, false);
+      assert.equal(d.getElementById("hud").hidden, true);
+      assert.equal(loopCalls().at(-1)[1][0], true);
+      assert.equal(
+        p.audioCalls.some(([name, args]) => name === "music" && args[0]),
+        false,
+      );
+      assert.equal(
+        p.requests.some((r) => r.route.endsWith("/game/finish")),
+        false,
+      );
+      d.getElementById("intro-help").dispatchEvent(
+        new p.w.Event("pointerdown", { bubbles: true }),
+      );
+      assert.equal(
+        g.state.mode,
+        "intro",
+        "reading the briefing must not start driving",
+      );
+      Object.defineProperty(d, "hidden", { configurable: true, value: true });
+      d.dispatchEvent(new p.w.Event("visibilitychange"));
+      assert.equal(loopCalls().at(-1)[1][0], false);
+      Object.defineProperty(d, "hidden", { configurable: true, value: false });
+      d.dispatchEvent(new p.w.Event("visibilitychange"));
+      await pause();
+      assert.equal(loopCalls().at(-1)[1][0], true);
+      if (touch) d.getElementById("drive-start").click();
+      else
+        p.w.dispatchEvent(new p.w.KeyboardEvent("keydown", { code: "Enter" }));
+      await pause();
+      assert.equal(g.state.mode, "playing");
+      assert.equal(d.getElementById("drive-intro").hidden, true);
+      assert.equal(loopCalls().at(-1)[1][0], false);
+      assert.equal(
+        p.audioCalls.some(([name, args]) => name === "music" && args[0]),
+        true,
+      );
+      assert.deepEqual(p.errors, []);
+    } finally {
+      p.close();
+    }
+  }
+});
+
+test("completed trips never replay the briefing background", async () => {
+  const p = await screen("drive", {
+    game: true,
+    query: "?rental=7",
+    current: { ...rental, status: "completed" },
+  });
+  try {
+    p.w.dispatchEvent(new p.w.Event("pointerdown"));
+    p.w.dispatchEvent(new p.w.KeyboardEvent("keydown", { code: "Enter" }));
+    assert.equal(p.w.DriveGame.state.mode, "result");
+    assert.equal(
+      p.audioCalls.some(([name, args]) => name === "loop" && args[0]),
+      false,
+    );
+  } finally {
+    p.close();
   }
 });

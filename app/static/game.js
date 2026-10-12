@@ -965,6 +965,7 @@
       return;
     state.starting = true;
     $("drive-start").disabled = true;
+    audio.unlock();
     try {
       localStorage.setItem(INTRO_HELP_KEY, "1");
     } catch (error) {
@@ -976,7 +977,7 @@
           method: "POST",
         });
       if (!(await heartbeat())) return;
-      audio.unlock();
+      audio.loop(false);
       const restored = restoreRun();
       if (!restored) {
         state.world = createWorld(false);
@@ -1080,6 +1081,7 @@
       return true;
     } catch (error) {
       if ([401, 404, 409].includes(error.status)) {
+        audio.loop(false);
         if (state.mode === "playing") togglePause(true);
         state.rental.status = "completed";
         setMode("intro");
@@ -1507,13 +1509,22 @@
     }
     document.addEventListener("visibilitychange", () => {
       if (document.hidden && state.mode === "playing") togglePause(true);
+      if (state.mode === "intro") briefingSound();
       if (!document.hidden) void heartbeat();
     });
-    // Autostart is silent until the first gesture unlocks browser audio.
+    // Browsers may require a gesture before the briefing's existing loop plays.
+    const briefingSound = () => {
+      audio.loop(
+        !document.hidden &&
+          state.mode === "intro" &&
+          ["reserved", "active"].includes(state.rental.status),
+      );
+    };
     window.addEventListener(
       "pointerdown",
       () => {
         audio.unlock();
+        if (state.mode === "intro") briefingSound();
         if (state.mode === "playing") audio.music(true);
       },
       { once: true },
@@ -1522,6 +1533,7 @@
       "keydown",
       () => {
         audio.unlock();
+        if (state.mode === "intro") briefingSound();
         if (state.mode === "playing") audio.music(true);
       },
       { once: true },
@@ -1531,11 +1543,19 @@
     startCaster();
     requestAnimationFrame(loop);
     if (state.rental.status === "completed") paintCompleted(state.rental);
-    else if (state.rental.status === "active") await start();
+    else {
+      setMode("intro");
+      if (await heartbeat()) briefingSound();
+    }
     const heartbeatTimer = setInterval(heartbeat, 30000);
-    window.addEventListener("pagehide", () => clearInterval(heartbeatTimer), {
-      once: true,
-    });
+    window.addEventListener(
+      "pagehide",
+      () => {
+        clearInterval(heartbeatTimer);
+        audio.loop(false);
+      },
+      { once: true },
+    );
   }
 
   global.DriveGame = {
