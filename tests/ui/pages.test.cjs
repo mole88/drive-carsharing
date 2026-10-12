@@ -18,7 +18,27 @@ const car = {
   status: "available",
   image: "images/kiario.png",
 };
-async function screen(name, role = "user", query = "") {
+const staleRental = {
+  id: 77,
+  car_id: 1,
+  status: "active",
+  rate_kopecks: 900,
+  total_kopecks: 0,
+  car_name: "Kia Rio",
+  plate: "TEST123",
+  address: "Test parking",
+  created_at: "2026-01-01T00:00:00Z",
+  started_at: "2026-01-01T00:00:00Z",
+  finished_at: null,
+  expires_at: "2026-01-01T00:20:00Z",
+  closeable_at: "2026-01-01T01:30:00Z",
+  server_now: "2026-01-01T05:00:00Z",
+  estimated_kopecks: 900,
+  pickup_address: "Test parking",
+  finish_address: null,
+  game_result: null,
+};
+async function screen(name, role = "user", query = "", active = null) {
   const user =
     role === "guest"
       ? null
@@ -30,6 +50,9 @@ async function screen(name, role = "user", query = "") {
         };
   const requests = [],
     errors = [];
+  /* Открытая поездка живёт в переменной: клик «Вернуть машину» обязан погасить
+     баннер так же, как это делает настоящий /rentals/current после закрытия. */
+  let open = active;
   const virtualConsole = new VirtualConsole();
   virtualConsole.on("jsdomError", (error) => errors.push(error.message));
   let html = read("app/templates/base.html");
@@ -80,7 +103,17 @@ async function screen(name, role = "user", query = "") {
     } else if (route === "/api/cars") data = [car];
     else if (route === "/api/rentals/summary")
       data = { completed_count: 0, total_kopecks: 0 };
-    else if (route === "/api/rentals/current") data = null;
+    else if (route === "/api/rentals/current") data = open;
+    else if (route === `/api/rentals/${active?.id}/return`) {
+      open = null;
+      data = {
+        ...active,
+        status: "completed",
+        total_kopecks: 900,
+        closeable_at: null,
+      };
+    } else if (route === "/api/rentals" && method === "GET")
+      data = open ? [open] : [];
     else if (route === "/api/admin/summary")
       data = {
         cars: 1,
@@ -88,12 +121,21 @@ async function screen(name, role = "user", query = "") {
         open_tickets: 0,
         completed_kopecks: 0,
       };
+    else if (route === "/api/admin/rentals")
+      data =
+        method === "POST"
+          ? {
+              ...staleRental,
+              status: "completed",
+              total_kopecks: 900,
+              closeable_at: null,
+            }
+          : [staleRental];
     else if (
       [
         "/api/rentals",
         "/api/support",
         "/api/admin/support",
-        "/api/admin/rentals",
         "/api/admin/audit",
       ].includes(route)
     )
@@ -166,6 +208,148 @@ test("catalog opens reservation dialog without rendering account sections", asyn
   }
 });
 
+/* Мёртвая точка, из-за которой человек с активной арендой не мог начать заезд:
+   каталог показывал заглушенную «Поехать» на занятой машине и ни одной ссылки
+   в игру. Выход обязан быть на той же странице, где пользователь остался. */
+const liveRental = { ...staleRental, closeable_at: "2026-01-01T07:00:00Z" };
+const reservationRental = {
+  ...staleRental,
+  status: "reserved",
+  started_at: null,
+  closeable_at: null,
+};
+
+test("каталог с активной поездкой ведёт в игру, а не в заглушку", async () => {
+  const p = await screen("cars", "user", "", staleRental);
+  try {
+    const banner = p.w.document.getElementById("active-trip");
+    assert.equal(banner.hidden, false, "баннер поездки на /cars обязателен");
+    assert.match(banner.textContent, /Продолжить поездку/);
+    const links = [
+      ...p.w.document.querySelectorAll('a[href^="/drive?rental="]'),
+    ];
+    assert.equal(links.length, 2, "баннер и карточка ведут в один заезд");
+    assert.equal(links[0].getAttribute("href"), "/drive?rental=77");
+    const card = p.w.document.querySelector(".card");
+    assert.equal(
+      card.querySelector("button[data-reserve]"),
+      null,
+      "своя машина не имеет права быть мёртвой кнопкой",
+    );
+    assert.match(card.querySelector(".badge").textContent, /Ваша поездка/);
+    assert.ok(
+      card.querySelector('[data-return-rental="77"]') ||
+        banner.querySelector('[data-return-rental="77"]'),
+      "зависшую поездку владелец сдаёт сам",
+    );
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});
+
+test("свежую поездку без игры не сдать", async () => {
+  const p = await screen("cars", "user", "", liveRental);
+  try {
+    assert.equal(p.w.document.querySelector("[data-return-rental]"), null);
+    assert.ok(p.w.document.querySelector('a[href="/drive?rental=77"]'));
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});
+
+test("броня на /cars начинается со страницы каталога", async () => {
+  const p = await screen("cars", "user", "", reservationRental);
+  try {
+    const banner = p.w.document.getElementById("active-trip");
+    assert.match(banner.textContent, /ВАША БРОНЬ/);
+    assert.match(banner.textContent, /осталось до отмены/);
+    const start = p.w.document.querySelector(
+      '.card button[data-action="start"]',
+    );
+    assert.ok(start, "карточка забронированной машины даёт старт");
+    assert.equal(start.textContent, "Начать поездку");
+    assert.match(
+      p.w.document.querySelector(".card .badge").textContent,
+      /Ваша бронь/,
+    );
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});
+
+test("вторая бронь при открытой поездке объясняется на месте, а не 409", async () => {
+  const p = await screen("cars", "user", "", {
+    ...staleRental,
+    car_id: 9,
+    closeable_at: null,
+  });
+  try {
+    const btn = p.w.document.querySelector("[data-reserve]");
+    assert.equal(btn.disabled, false, "чужая машина остаётся доступной");
+    btn.click();
+    await pause();
+    await pause();
+    assert.equal(
+      p.requests.filter((r) => r.url === "/api/rentals" && r.method === "POST")
+        .length,
+      0,
+      "диалог, который сервер отклонит, открывать нельзя",
+    );
+    assert.equal(
+      p.w.document.getElementById("reserve-dialog").hasAttribute("open"),
+      false,
+    );
+    assert.match(
+      p.w.document.getElementById("message").textContent,
+      /ещё не возвращена/,
+    );
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});
+
+test("возврат зависшей поездки подтверждается вторым кликом", async () => {
+  const p = await screen("cars", "user", "", staleRental);
+  try {
+    const btn = p.w.document.querySelector('[data-return-rental="77"]');
+    assert.ok(btn);
+    assert.match(btn.textContent, /Вернуть машину без игры/);
+    assert.match(
+      p.w.document.getElementById("active-trip").textContent,
+      /одну минуту тарифа/,
+      "цена решения называется до подтверждения",
+    );
+    btn.click();
+    await pause();
+    assert.equal(
+      p.requests.some((r) => r.url === "/api/rentals/77/return"),
+      false,
+      "первый клик только вооружает кнопку",
+    );
+    assert.match(btn.textContent, /Подтвердите возврат/);
+    btn.click();
+    await pause();
+    await pause();
+    assert(
+      p.requests.some(
+        (r) => r.url === "/api/rentals/77/return" && r.method === "POST",
+      ),
+    );
+    assert.equal(p.w.document.getElementById("active-trip").hidden, true);
+    assert.match(
+      p.w.document.getElementById("message").textContent,
+      /Машина возвращена/,
+    );
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});
+
 test("profile saves name on its own page", async () => {
   const p = await screen("profile");
   try {
@@ -219,6 +403,26 @@ test("admin fleet editor loads and saves vehicle", async () => {
     assert(
       p.requests.some(
         (r) => r.url === "/api/admin/cars/1" && r.method === "PUT",
+      ),
+    );
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});
+
+test("кабинет закрывает зависшую поездку", async () => {
+  const p = await screen("admin", "admin");
+  try {
+    const d = p.w.document;
+    const btn = d.querySelector("[data-close-rental]");
+    assert.ok(btn, "для активной поездки старше порога появляется кнопка");
+    assert.equal(btn.dataset.closeRental, "77");
+    btn.click();
+    await pause();
+    assert(
+      p.requests.some(
+        (r) => r.url === "/api/admin/rentals/77/close" && r.method === "POST",
       ),
     );
     assert.deepEqual(p.errors, []);

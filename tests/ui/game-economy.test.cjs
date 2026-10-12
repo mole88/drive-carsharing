@@ -300,8 +300,64 @@ test("bribes cost money and cool the wanted level, silence costs bumpers", () =>
   blocker.y = stubborn.player.y;
   core.step(stubborn, sim.DT, {});
   stubborn.player.cash = 0;
-  for (let i = 0; i < Math.ceil(RULES.bribeWindow / sim.DT) + 5; i++)
-    core.step(stubborn, sim.DT, {});
+  const wait = Math.ceil(stubborn.player.encounter.window / sim.DT) + 5;
+  for (let i = 0; i < wait; i++) core.step(stubborn, sim.DT, {});
   assert.equal(stubborn.stats.failedBribes, 1, "молчание пишется в протокол");
   assert.ok(stubborn.player.hearts <= 4, "протокол бьёт по бамперу");
+});
+
+test("долг по тарифу объявляет себя на переходе, а не на каждом тике", () => {
+  const w = core.createRun({ seed: 7, carName: "Kia Rio", rateKopecks: 1400 });
+  w.player.cash = 0;
+  let debtStarts = 0;
+  let rents = 0;
+  /* плашка живёт ttl и исчезает из fx, поэтому её считают по факту появления */
+  const seenPops = new Set();
+  let debtPops = 0;
+  const run = (seconds) => {
+    /* время мира ведёт сам core.step: прибавлять его руками здесь значит
+       считать минуты тарифа дважды */
+    for (let i = 0; i < Math.round(seconds * 60); i++) {
+      core.step(w, sim.DT, {});
+      for (const e of w.events) {
+        if (e.type === "debtStart") debtStarts += 1;
+        if (e.type === "rent") rents += 1;
+      }
+      for (const f of w.fx) {
+        if (
+          f.kind === "pop" &&
+          f.text === "ДОЛГ ПО ТАРИФУ" &&
+          !seenPops.has(f)
+        ) {
+          seenPops.add(f);
+          debtPops += 1;
+        }
+      }
+      /* доход сначала гасит долг — забираем купюры, чтобы мерить именно тики */
+      w.pickups.length = 0;
+      w.events.length = 0;
+    }
+  };
+  run(3);
+  assert.ok(w.player.rentalDebt > 0, "без наличных тариф обязан уйти в долг");
+  assert.equal(debtStarts, 1, "первый долг кричит один раз");
+  assert.equal(debtPops, 1, "плашка о долге появилась один раз");
+  assert.ok(rents >= 1, "тик тарифа всё равно считается");
+
+  const grew = w.player.rentalDebt;
+  run(6);
+  assert.ok(w.player.rentalDebt > grew, "без дохода долг растёт");
+  assert.equal(
+    debtStarts,
+    1,
+    "тики поверх уже имеющегося долга сигнал не повторяют",
+  );
+  assert.equal(debtPops, 1, "и плашка не должна повторяться");
+  assert.equal(w.status, "running", "до лимита в 12 минут тарифа заезд жив");
+
+  /* выбрался из долга и снова упал — это новый случай, он обязан быть слышен */
+  w.player.rentalDebt = 0;
+  run(6);
+  assert.equal(debtStarts, 2, "свежий долг после погашения объявляется заново");
+  assert.equal(debtPops, 2, "и плашка выходит заново на новый долг");
 });

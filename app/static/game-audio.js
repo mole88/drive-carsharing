@@ -28,6 +28,11 @@
     droneLock: "audio/mellstroy-krik1.mp3",
     droneDive: "audio/mellstroy-krik2.mp3",
     babachai: "audio/mellstroy-babachai.mp3",
+    banani: "audio/banani.mp3",
+    slivi: "audio/slivi.mp3",
+    vinograd: "audio/vinograd.mp3",
+    damage: "audio/mellstroy-ekh-ty-suka.mp3",
+    lose: "audio/mellstroy-obidno-mellstroi-vavfya.mp3",
   };
   /* Слоты, где реплика полностью заменяет синтез (пока файла нет — играет синтезатор). */
   const REPLACE = ["win"];
@@ -52,7 +57,11 @@
   let duckRelease = null;
   const samples = {};
   const loudness = {};
-  const levels = { comment: {}, music: TRACK_FALLBACK_LEVEL, loop: LEVELS.loop };
+  const levels = {
+    comment: {},
+    music: TRACK_FALLBACK_LEVEL,
+    loop: LEVELS.loop,
+  };
   let loopElements = [];
   let loopTimer = null;
   let loopActive = 0;
@@ -111,7 +120,11 @@
     const gain = ctx.createGain();
     osc.type = o.type || "square";
     osc.frequency.setValueAtTime(o.from, now);
-    if (o.to) osc.frequency.exponentialRampToValueAtTime(Math.max(20, o.to), now + o.dur);
+    if (o.to)
+      osc.frequency.exponentialRampToValueAtTime(
+        Math.max(20, o.to),
+        now + o.dur,
+      );
     gain.gain.setValueAtTime(0.0001, now);
     gain.gain.exponentialRampToValueAtTime(o.gain || 0.25, now + 0.012);
     gain.gain.exponentialRampToValueAtTime(0.0001, now + o.dur);
@@ -136,7 +149,11 @@
     const bq = ctx.createBiquadFilter();
     bq.type = o.type || "bandpass";
     bq.frequency.setValueAtTime(o.from || 900, now);
-    if (o.to) bq.frequency.exponentialRampToValueAtTime(Math.max(60, o.to), now + o.dur);
+    if (o.to)
+      bq.frequency.exponentialRampToValueAtTime(
+        Math.max(60, o.to),
+        now + o.dur,
+      );
     bq.Q.value = o.q || 1.2;
     const gain = ctx.createGain();
     gain.gain.setValueAtTime(o.gain || 0.3, now);
@@ -151,12 +168,25 @@
   const SFX = {
     knock() {
       tone({ from: 520, to: 120, dur: 0.22, type: "triangle", gain: 0.34 });
-      tone({ from: 1300, to: 700, dur: 0.1, type: "sine", gain: 0.16, delay: 0.02 });
+      tone({
+        from: 1300,
+        to: 700,
+        dur: 0.1,
+        type: "sine",
+        gain: 0.16,
+        delay: 0.02,
+      });
       noise({ dur: 0.12, from: 1400, to: 300, gain: 0.16 });
     },
     vip() {
       [0, 4, 7, 12].forEach((s, i) =>
-        tone({ from: freq(s + 12), dur: 0.16, type: "square", gain: 0.2, delay: i * 0.05 }),
+        tone({
+          from: freq(s + 12),
+          dur: 0.16,
+          type: "square",
+          gain: 0.2,
+          delay: i * 0.05,
+        }),
       );
     },
     cash() {
@@ -165,32 +195,128 @@
     },
     power() {
       [0, 5, 9, 14].forEach((s, i) =>
-        tone({ from: freq(s + 8), dur: 0.13, type: "triangle", gain: 0.32, delay: i * 0.045 }),
+        tone({
+          from: freq(s + 8),
+          dur: 0.13,
+          type: "triangle",
+          gain: 0.32,
+          delay: i * 0.045,
+        }),
+      );
+    },
+    /* тот же аккорд вниз: сила закончилась, и это надо слышать сразу */
+    powerEnd() {
+      [14, 9, 5, 0].forEach((s, i) =>
+        tone({
+          from: freq(s + 8),
+          dur: 0.11,
+          type: "triangle",
+          gain: 0.2,
+          delay: i * 0.04,
+        }),
       );
     },
     nitro() {
       noise({ dur: 0.55, from: 300, to: 4200, gain: 0.32, type: "highpass" });
-      tone({ from: 160, to: 900, dur: 0.5, type: "sawtooth", gain: 0.16, filter: "lowpass", cutoff: 1800 });
+      tone({
+        from: 160,
+        to: 900,
+        dur: 0.5,
+        type: "sawtooth",
+        gain: 0.16,
+        filter: "lowpass",
+        cutoff: 1800,
+      });
+    },
+    /* Нитро кончилось: игрок обязан слыжать конец щита, а не гадать по полоске */
+    nitroEnd() {
+      noise({ dur: 0.3, from: 3200, to: 500, gain: 0.14, type: "highpass" });
+      tone({
+        from: 700,
+        to: 140,
+        dur: 0.3,
+        type: "sawtooth",
+        gain: 0.1,
+        filter: "lowpass",
+        cutoff: 900,
+      });
     },
     siren() {
       tone({ from: 700, to: 1150, dur: 0.28, type: "sine", gain: 0.14 });
-      tone({ from: 1150, to: 700, dur: 0.28, type: "sine", gain: 0.14, delay: 0.28 });
+      tone({
+        from: 1150,
+        to: 700,
+        dur: 0.28,
+        type: "sine",
+        gain: 0.14,
+        delay: 0.28,
+      });
     },
     encounter() {
-      tone({ from: 400, to: 300, dur: 0.3, type: "sawtooth", gain: 0.22, filter: "lowpass", cutoff: 700 });
+      tone({
+        from: 400,
+        to: 300,
+        dur: 0.3,
+        type: "sawtooth",
+        gain: 0.22,
+        filter: "lowpass",
+        cutoff: 700,
+      });
       noise({ dur: 0.2, from: 500, gain: 0.12 });
     },
     bribe() {
       [12, 9, 7, 4, 0].forEach((s, i) =>
-        tone({ from: freq(s + 12), dur: 0.1, type: "square", gain: 0.2, delay: i * 0.055 }),
+        tone({
+          from: freq(s + 12),
+          dur: 0.1,
+          type: "square",
+          gain: 0.2,
+          delay: i * 0.055,
+        }),
       );
       noise({ dur: 0.16, from: 3000, to: 1200, gain: 0.12, delay: 0.28 });
     },
     broke() {
-      tone({ from: 260, to: 110, dur: 0.35, type: "square", gain: 0.2, filter: "lowpass", cutoff: 500 });
+      tone({
+        from: 260,
+        to: 110,
+        dur: 0.35,
+        type: "square",
+        gain: 0.2,
+        filter: "lowpass",
+        cutoff: 500,
+      });
+    },
+    /* штамп бухгалтера: наличность кончилась, тариф пошёл в долг */
+    debt() {
+      tone({
+        from: 300,
+        to: 160,
+        dur: 0.18,
+        type: "square",
+        gain: 0.22,
+        filter: "lowpass",
+        cutoff: 800,
+      });
+      noise({
+        dur: 0.22,
+        from: 800,
+        to: 200,
+        gain: 0.14,
+        type: "lowpass",
+        delay: 0.1,
+      });
     },
     protocol() {
-      tone({ from: 180, to: 70, dur: 0.5, type: "sawtooth", gain: 0.26, filter: "lowpass", cutoff: 420 });
+      tone({
+        from: 180,
+        to: 70,
+        dur: 0.5,
+        type: "sawtooth",
+        gain: 0.26,
+        filter: "lowpass",
+        cutoff: 420,
+      });
       noise({ dur: 0.4, from: 240, gain: 0.2, type: "lowpass" });
     },
     damage() {
@@ -208,12 +334,31 @@
       tone({ from: 900, to: 1900, dur: 0.9, type: "sine", gain: 0.13 });
     },
     droneDive() {
-      tone({ from: 2000, to: 400, dur: 0.55, type: "sawtooth", gain: 0.17, filter: "highpass" });
+      tone({
+        from: 2000,
+        to: 400,
+        dur: 0.55,
+        type: "sawtooth",
+        gain: 0.17,
+        filter: "highpass",
+      });
       noise({ dur: 0.5, from: 2400, to: 700, gain: 0.14 });
     },
     droneKill() {
       noise({ dur: 0.45, from: 2600, to: 120, gain: 0.36, type: "lowpass" });
       tone({ from: 700, to: 90, dur: 0.4, type: "square", gain: 0.2 });
+    },
+    /* уклонился — короткий выдох ветра, чтобы успех был слышно */
+    droneMiss() {
+      noise({ dur: 0.2, from: 2000, to: 700, gain: 0.12, type: "bandpass" });
+      tone({
+        from: 1400,
+        to: 2100,
+        dur: 0.09,
+        type: "sine",
+        gain: 0.1,
+        delay: 0.03,
+      });
     },
     spin() {
       tone({ from: 800, to: 200, dur: 0.45, type: "sine", gain: 0.18 });
@@ -224,7 +369,13 @@
     },
     phase() {
       [0, 7, 12, 16].forEach((s, i) =>
-        tone({ from: freq(s), dur: 0.4, type: "triangle", gain: 0.16, delay: i * 0.09 }),
+        tone({
+          from: freq(s),
+          dur: 0.4,
+          type: "triangle",
+          gain: 0.16,
+          delay: i * 0.09,
+        }),
       );
     },
     shield() {
@@ -232,26 +383,59 @@
     },
     start() {
       [0, 5, 7, 12].forEach((s, i) =>
-        tone({ from: freq(s + 12), dur: 0.18, type: "square", gain: 0.22, delay: i * 0.11 }),
+        tone({
+          from: freq(s + 12),
+          dur: 0.18,
+          type: "square",
+          gain: 0.22,
+          delay: i * 0.11,
+        }),
       );
     },
     win() {
       [12, 12, 12, 16, 19, 24].forEach((s, i) =>
-        tone({ from: freq(s), dur: 0.3, type: "triangle", gain: 0.24, delay: i * 0.14 }),
+        tone({
+          from: freq(s),
+          dur: 0.3,
+          type: "triangle",
+          gain: 0.24,
+          delay: i * 0.14,
+        }),
       );
     },
     lose() {
       [12, 7, 3, 0].forEach((s, i) =>
-        tone({ from: freq(s), dur: 0.42, type: "sawtooth", gain: 0.2, filter: "lowpass", cutoff: 900, delay: i * 0.19 }),
+        tone({
+          from: freq(s),
+          dur: 0.42,
+          type: "sawtooth",
+          gain: 0.2,
+          filter: "lowpass",
+          cutoff: 900,
+          delay: i * 0.19,
+        }),
       );
     },
     cheer() {
       [0, 7, 12, 16, 19].forEach((s, i) =>
-        tone({ from: freq(s + 12), dur: 0.22, type: "square", gain: 0.2, delay: i * 0.07 }),
+        tone({
+          from: freq(s + 12),
+          dur: 0.22,
+          type: "square",
+          gain: 0.2,
+          delay: i * 0.07,
+        }),
       );
     },
     go() {
-      tone({ from: 300, to: 900, dur: 0.4, type: "sawtooth", gain: 0.22, filter: "bandpass" });
+      tone({
+        from: 300,
+        to: 900,
+        dur: 0.4,
+        type: "sawtooth",
+        gain: 0.22,
+        filter: "bandpass",
+      });
       tone({ from: 900, dur: 0.2, type: "square", gain: 0.18, delay: 0.4 });
     },
   };
@@ -263,10 +447,25 @@
       const when = Math.max(nextNote, ctx.currentTime + 0.02);
       const i = stepIndex % 8;
       if (!muted) {
-        tone({ from: freq(BASS[i]), dur: beat * 0.85, type: "square", gain: 0.3, bus: musicGain, filter: "lowpass", cutoff: 620 });
+        tone({
+          from: freq(BASS[i]),
+          dur: beat * 0.85,
+          type: "square",
+          gain: 0.3,
+          bus: musicGain,
+          filter: "lowpass",
+          cutoff: 620,
+        });
         if (i % 2 === 0)
-          tone({ from: freq(LEAD[i] + 12), dur: beat * 0.5, type: "triangle", gain: 0.16, bus: musicGain });
-        if (stepIndex % 4 === 2) noise({ dur: 0.05, from: 5000, gain: 0.06, type: "highpass" });
+          tone({
+            from: freq(LEAD[i] + 12),
+            dur: beat * 0.5,
+            type: "triangle",
+            gain: 0.16,
+            bus: musicGain,
+          });
+        if (stepIndex % 4 === 2)
+          noise({ dur: 0.05, from: 5000, gain: 0.06, type: "highpass" });
       }
       nextNote += beat;
       stepIndex += 1;
@@ -310,7 +509,10 @@
     trackRamp = setInterval(() => {
       done += 1;
       const t = Math.min(1, done / steps);
-      track.volume = Math.max(0, Math.min(1, from + (to - from) * (1 - Math.pow(1 - t, 2))));
+      track.volume = Math.max(
+        0,
+        Math.min(1, from + (to - from) * (1 - Math.pow(1 - t, 2))),
+      );
       if (t >= 1) {
         clearInterval(trackRamp);
         trackRamp = null;
@@ -319,7 +521,8 @@
     }, 50);
   }
 
-  const canonical = (name) => String(name).replace(/_+([a-zA-Z])/g, (m, c) => c.toUpperCase());
+  const canonical = (name) =>
+    String(name).replace(/_+([a-zA-Z])/g, (m, c) => c.toUpperCase());
 
   function urlOf(file) {
     return file.startsWith("/") ? file : "/static/" + file;
@@ -327,7 +530,9 @@
 
   function slotOf(name) {
     const key = canonical(name);
-    return Object.keys(SAMPLES).find((slot) => canonical(slot) === key) ? key : null;
+    return Object.keys(SAMPLES).find((slot) => canonical(slot) === key)
+      ? key
+      : null;
   }
 
   async function measure(url) {
@@ -348,7 +553,10 @@
           n += 1;
         }
       }
-      loudness[url] = { rms: Math.sqrt(sum / Math.max(1, n)) || 0.05, duration: buffer.duration };
+      loudness[url] = {
+        rms: Math.sqrt(sum / Math.max(1, n)) || 0.05,
+        duration: buffer.duration,
+      };
     } catch (error) {
       void error;
       loudness[url] = { rms: 0, duration: 0 };
@@ -364,8 +572,14 @@
   const durations = {};
 
   async function normalizeAll() {
-    const jobs = [measure(TRACK_SRC).then((m) => (levels.music = gainTo(m.rms, LEVELS.music)))];
-    jobs.push(measure(LOOP_SRC).then((m) => (levels.loop = gainTo(m.rms, LEVELS.loop))));
+    const jobs = [
+      measure(TRACK_SRC).then(
+        (m) => (levels.music = gainTo(m.rms, LEVELS.music)),
+      ),
+    ];
+    jobs.push(
+      measure(LOOP_SRC).then((m) => (levels.loop = gainTo(m.rms, LEVELS.loop))),
+    );
     for (const slot of Object.keys(SAMPLES)) {
       const url = urlOf(SAMPLES[slot]);
       jobs.push(
@@ -412,10 +626,13 @@
     if (!track || trackBroken || !musicOn) return;
     rampTrack(trackLevel * DUCK_RATIO, 120);
     if (duckRelease) clearTimeout(duckRelease);
-    duckRelease = setTimeout(() => {
-      duckRelease = null;
-      if (musicOn && !muted) rampTrack(trackLevel, 400);
-    }, seconds * 1000 + 220);
+    duckRelease = setTimeout(
+      () => {
+        duckRelease = null;
+        if (musicOn && !muted) rampTrack(trackLevel, 400);
+      },
+      seconds * 1000 + 220,
+    );
   }
 
   function loopElement(index) {
@@ -538,7 +755,8 @@
       if (sfxGain) sfxGain.gain.value = BUS.sfx * volumes.sfx;
       if (kind === "music") {
         trackLevel = levels.music * volumes.music;
-        if (track && !trackBroken) rampTrack(muted || !musicOn ? 0 : trackLevel, 120);
+        if (track && !trackBroken)
+          rampTrack(muted || !musicOn ? 0 : trackLevel, 120);
         for (const el of loopElements)
           if (el && loopOn && !muted) el.volume = loopLevel();
       } else {
@@ -659,7 +877,10 @@
         clearTimeout(duckRelease);
         duckRelease = null;
       }
-      rampTrack(on ? trackLevel * DUCK_RATIO : muted ? 0 : trackLevel, on ? 220 : 500);
+      rampTrack(
+        on ? trackLevel * DUCK_RATIO : muted ? 0 : trackLevel,
+        on ? 220 : 500,
+      );
     },
     tap(on) {
       if (!ctx) api.unlock();
@@ -686,7 +907,10 @@
         if (v > peak) peak = v;
         sum += tapData[i] * tapData[i];
       }
-      return { peak: +peak.toFixed(3), rms: +Math.sqrt(sum / tapData.length).toFixed(3) };
+      return {
+        peak: +peak.toFixed(3),
+        rms: +Math.sqrt(sum / tapData.length).toFixed(3),
+      };
     },
     cut(name) {
       const slot = slotOf(name);
@@ -710,7 +934,10 @@
         music: Number(trackLevel.toFixed(3)),
         loop: Number(levels.loop.toFixed(3)),
         comments: Object.fromEntries(
-          Object.keys(levels.comment).map((k) => [k, Number(levels.comment[k].toFixed(3))]),
+          Object.keys(levels.comment).map((k) => [
+            k,
+            Number(levels.comment[k].toFixed(3)),
+          ]),
         ),
       };
     },
@@ -721,7 +948,11 @@
         music: musicOn,
         loop: loopOn,
         available: api.available(),
-        track: trackBroken ? "fallback-synth" : track ? "testdrive.mp3" : "idle",
+        track: trackBroken
+          ? "fallback-synth"
+          : track
+            ? "testdrive.mp3"
+            : "idle",
         trackVolume: track ? Number(track.volume.toFixed(3)) : 0,
         trackPlaying: track ? !track.paused && !track.ended : false,
         trackTime: track ? Number(track.currentTime.toFixed(1)) : 0,
@@ -733,7 +964,11 @@
         voiceStates: Object.fromEntries(
           Object.entries(samples).map(([slot, el]) => [
             slot,
-            { paused: el.paused, t: Number(el.currentTime.toFixed(2)), vol: Number(el.volume.toFixed(3)) },
+            {
+              paused: el.paused,
+              t: Number(el.currentTime.toFixed(2)),
+              vol: Number(el.volume.toFixed(3)),
+            },
           ]),
         ),
         loopInfo: {
@@ -744,7 +979,9 @@
               ? {
                   t: Number(el.currentTime.toFixed(2)),
                   vol: Number(el.volume.toFixed(3)),
-                  dur: Number.isFinite(el.duration) ? +el.duration.toFixed(2) : null,
+                  dur: Number.isFinite(el.duration)
+                    ? +el.duration.toFixed(2)
+                    : null,
                   paused: el.paused,
                 }
               : null,

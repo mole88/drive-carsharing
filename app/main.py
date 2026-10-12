@@ -20,12 +20,12 @@ from app.api.support import router as support_router
 from app.core.config import settings
 from app.core.db import SessionLocal, get_db
 from app.pages import router as pages_router
-from app.services.rentals import expire_reservations
+from app.services.rentals import expire_rentals
 
 
 def cleanup():
     with SessionLocal() as db:
-        expire_reservations(db)
+        expire_rentals(db)
         from sqlalchemy import delete
 
         from app.models import AuthThrottle, LoginSession, utcnow
@@ -42,7 +42,7 @@ async def lifespan(app):
             try:
                 await asyncio.to_thread(cleanup)
             except Exception:
-                logging.getLogger(__name__).exception("Reservation cleanup failed")
+                logging.getLogger(__name__).exception("Rental cleanup failed")
             await asyncio.sleep(30)
 
     task = asyncio.create_task(worker())

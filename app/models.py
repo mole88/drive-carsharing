@@ -64,6 +64,7 @@ class Rental(Base):
     rate_kopecks: Mapped[int]
     created_at: Mapped[datetime] = mapped_column(default=utcnow)
     started_at: Mapped[datetime | None]
+    last_activity_at: Mapped[datetime | None]
     finished_at: Mapped[datetime | None]
     total_kopecks: Mapped[int] = mapped_column(default=0)
     car_name_snapshot: Mapped[str] = mapped_column(String(125), default="")

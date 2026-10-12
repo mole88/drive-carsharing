@@ -196,6 +196,22 @@ def test_implausible_game_cannot_end_or_bill_rental(setup):
     assert c.get("/api/game/leaderboard").json()["rows"] == []
 
 
+def test_finish_remembers_what_ended_the_shift(setup):
+    c, _ = setup
+    done = finish(setup, killer="drone", dodges=7)
+    assert done["game_result"]["killer"] == "drone"
+    assert done["game_result"]["dodges"] == 7
+    assert finish(setup)["game_result"]["killer"] is None
+    # Экран итогов подставляет метки из своего списка, поэтому мусор не проходит.
+    ident = begin(setup, duration=60)
+    junk = c.post(
+        f"/api/rentals/{ident}/game/finish", headers=auth(), json=run(killer="<img src=x>")
+    )
+    assert junk.status_code == 422
+    # Строка недели остаётся одной: killer не попал в таблицу рекордов.
+    assert len(c.get("/api/game/leaderboard", headers=auth()).json()["rows"]) == 1
+
+
 def test_owned_rental_snapshot_locked_billing_and_receipt(setup):
     c, factory = setup
     ident = begin(setup, duration=61)

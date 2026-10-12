@@ -3,13 +3,13 @@ from datetime import timedelta
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 
 from app.core.db import Base, get_db
 from app.core.security import create_token, password_hash
 from app.main import app
-from app.models import Car, Rental, User, utcnow
+from app.models import AuditEvent, Car, Rental, User, utcnow
 
 
 @pytest.fixture
@@ -383,6 +383,139 @@ def test_admin_edit_and_audit(setup):
     assert len(c.get("/api/admin/rentals?search=XYZ123", headers=auth(3)).json()) == 1
     assert c.get("/api/admin/summary", headers=auth()).status_code == 403
     assert c.get("/api/admin/summary", headers=auth(3)).json()["cars"] == 2
+
+
+def test_admin_closes_only_abandoned_trip(setup):
+    c, factory = setup
+    ident = c.post("/api/rentals", headers=auth(), json={"car_id": 1}).json()["id"]
+    assert c.post(f"/api/rentals/{ident}/start", headers=auth()).status_code == 200
+    listed = c.get("/api/admin/rentals", headers=auth(3)).json()[0]
+    assert listed["closeable_at"] and listed["server_now"]
+    assert c.post(f"/api/admin/rentals/{ident}/close", headers=auth()).status_code == 403
+    young = c.post(f"/api/admin/rentals/{ident}/close", headers=auth(3))
+    assert young.status_code == 409 and "90" in young.json()["detail"]
+    assert c.get("/api/cars/1").json()["status"] == "rented", "свежую поездку не трогаем"
+
+    with factory() as db:
+        db.get(Rental, ident).started_at = utcnow() - timedelta(minutes=120)
+        db.get(Rental, ident).last_activity_at = None
+        db.commit()
+
+    closed = c.post(f"/api/admin/rentals/{ident}/close", headers=auth(3))
+    assert closed.status_code == 200, closed.text
+    body = closed.json()
+    assert body["status"] == "completed" and body["game_result"] is None
+    assert body["total_kopecks"] == body["rate_kopecks"], "списание по минимуму договора"
+    assert body["closeable_at"] is None
+    assert c.get("/api/cars/1").json()["status"] == "available"
+    assert c.post(f"/api/admin/rentals/{ident}/close", headers=auth(3)).status_code == 409, (
+        "повторное закрытие не должно проходить"
+    )
+    assert c.get("/api/admin/audit", headers=auth(3)).json()[0]["action"] == "rental.force_closed"
+    assert c.get("/api/admin/summary", headers=auth(3)).json()["active_rentals"] == 0
+
+
+def test_owner_returns_abandoned_trip_without_admin(setup):
+    """Зависшую поездку владелец закрывает сам.
+
+    Админского аккаунта на проде нет ни одного, поэтому кнопка кабинета не
+    выводит игрока из тупика: активная аренда держит машину и блокирует новую
+    бронь, а путь наружу только один — вернуться в игру.
+    """
+    c, factory = setup
+    ident = c.post("/api/rentals", headers=auth(), json={"car_id": 1}).json()["id"]
+    assert c.post(f"/api/rentals/{ident}/start", headers=auth()).status_code == 200
+    listed = c.get("/api/rentals/current", headers=auth()).json()
+    assert listed["closeable_at"] and listed["server_now"]
+
+    young = c.post(f"/api/rentals/{ident}/return", headers=auth())
+    assert young.status_code == 409 and "90" in young.json()["detail"]
+    assert c.get("/api/cars/1").json()["status"] == "rented", "свежую поездку сдаёт только игра"
+
+    with factory() as db:
+        db.get(Rental, ident).started_at = utcnow() - timedelta(minutes=120)
+        db.get(Rental, ident).last_activity_at = None
+        db.commit()
+
+    stranger = c.post(f"/api/rentals/{ident}/return", headers=auth(2))
+    assert stranger.status_code == 404, "чужую поездку сдать нельзя"
+    with factory() as db:
+        assert db.get(Rental, ident).status == "active"
+
+    back = c.post(f"/api/rentals/{ident}/return", headers=auth())
+    assert back.status_code == 200, back.text
+    body = back.json()
+    assert body["status"] == "completed" and body["game_result"] is None
+    assert body["total_kopecks"] == body["rate_kopecks"], "списание по минимуму договора"
+    assert body["closeable_at"] is None
+    assert c.get("/api/cars/1").json()["status"] == "available"
+    assert c.get("/api/rentals/current", headers=auth()).json() is None
+    assert c.post(f"/api/rentals/{ident}/return", headers=auth()).status_code == 409
+    assert c.get("/api/admin/audit", headers=auth(3)).json()[0]["action"] == "rental.self_returned"
+
+    reservation = c.post("/api/rentals", headers=auth(), json={"car_id": 2}).json()["id"]
+    assert c.post(f"/api/rentals/{reservation}/return", headers=auth()).status_code == 409
+    assert c.post(f"/api/rentals/{reservation}/cancel", headers=auth()).status_code == 200
+
+
+@pytest.mark.parametrize("trigger", ["catalog", "worker"])
+def test_abandoned_trip_automatically_releases_car(setup, trigger):
+    c, factory = setup
+    ident = c.post("/api/rentals", headers=auth(), json={"car_id": 1}).json()["id"]
+    c.post(f"/api/rentals/{ident}/start", headers=auth())
+    with factory() as db:
+        row = db.get(Rental, ident)
+        row.started_at = utcnow() - timedelta(hours=19)
+        row.last_activity_at = None  # Existing trips before migration 0009.
+        db.commit()
+    if trigger == "worker":
+        from app.main import cleanup
+
+        cleanup()  # No visitor is necessary to release an abandoned car.
+    else:
+        assert c.get("/api/cars?available=true").json()[0]["id"] == 1
+    assert c.get("/api/cars/1").json()["status"] == "available"
+    assert c.get("/api/rentals/current", headers=auth()).json() is None
+    old = c.get(f"/api/rentals/{ident}", headers=auth()).json()
+    assert old["status"] == "completed" and old["game_result"] is None
+    assert old["total_kopecks"] == old["rate_kopecks"]
+    assert old["finish_address"] == old["pickup_address"]
+    receipt = c.get(f"/api/rentals/{ident}/receipt", headers=auth()).text
+    assert "<dd>1 мин</dd>" in receipt
+    assert c.post(f"/api/rentals/{ident}/heartbeat", headers=auth()).status_code == 409
+    with factory() as db:
+        events = db.scalars(select(AuditEvent).where(AuditEvent.action == "rental.expired")).all()
+        assert len(events) == 1 and events[0].target == f"rental:{ident}"
+        assert db.get(Rental, ident).total_kopecks == 950
+    assert c.post("/api/rentals", headers=auth(), json={"car_id": 1}).status_code == 201
+
+
+def test_heartbeat_preserves_long_running_game_and_checks_owner(setup):
+    c, factory = setup
+    ident = c.post("/api/rentals", headers=auth(), json={"car_id": 1}).json()["id"]
+    assert c.post(f"/api/rentals/{ident}/heartbeat", headers=auth()).status_code == 409
+    c.post(f"/api/rentals/{ident}/start", headers=auth())
+    last_seen = utcnow() - timedelta(minutes=80)
+    with factory() as db:
+        row = db.get(Rental, ident)
+        row.started_at = utcnow() - timedelta(hours=2)
+        row.last_activity_at = last_seen
+        db.commit()
+    assert c.post(f"/api/rentals/{ident}/heartbeat", headers=auth(2)).status_code == 404
+    with factory() as db:
+        assert db.get(Rental, ident).last_activity_at == last_seen
+    assert c.post(f"/api/rentals/{ident}/heartbeat", headers=auth()).status_code == 200
+    assert c.get("/api/cars/1").json()["status"] == "rented"
+    assert c.post(f"/api/rentals/{ident}/return", headers=auth()).status_code == 409
+    assert c.post(f"/api/admin/rentals/{ident}/close", headers=auth(3)).status_code == 409
+    with factory() as db:
+        row = db.get(Rental, ident)
+        assert row.last_activity_at > last_seen
+        row.last_activity_at = utcnow() - timedelta(minutes=91)
+        db.commit()
+    assert c.post(f"/api/rentals/{ident}/heartbeat", headers=auth()).status_code == 409
+    assert c.get("/api/cars/1").json()["status"] == "available"
+    assert c.post(f"/api/rentals/{ident}/heartbeat").status_code == 401
 
 
 def test_support_validation_and_pagination(setup):

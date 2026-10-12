@@ -171,6 +171,17 @@
   white-space: nowrap;
   text-overflow: ellipsis;
 }
+/* Касса возврата живёт под суммой в кассе: ровно та цифра, что сгорит при аварии. */
+#hud-cashout {
+  position: absolute;
+  bottom: 5px;
+  left: 10px;
+  right: 6px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: #d5ff5f;
+}
 .hud-score.beat small {
   color: #ffd85e;
 }
@@ -321,7 +332,8 @@
   display: flex;
   justify-content: flex-end;
   align-items: center;
-  height: 44px;
+  height: auto;
+  min-height: 44px;
 }
 .hud-powers {
   position: absolute;
@@ -455,6 +467,15 @@
   width: 100%;
   background: #ffd85e;
 }
+/* Цена отказа и альтернатива нитро — то, что игрок решает за полторы секунды */
+.bribe-prompt small {
+  display: block;
+  margin-top: 3px;
+  font-size: 9px;
+  line-height: 1.25;
+  font-weight: 700;
+  color: #ffd85e;
+}
 .drive-touch {
   position: absolute;
   right: 12px;
@@ -489,6 +510,11 @@
 .drive-touch button:active {
   transform: translateY(2px);
   box-shadow: none;
+}
+/* Пока идёт диалог с патрулем, кнопка «Взятка» подсвечена: на таймер в 1.5 с */
+.drive-touch button.armed {
+  border-color: #ffd85e;
+  box-shadow: 0 0 0 2px #ffd85e73, 0 3px 0 #3d8b83;
 }
 .hud button {
   touch-action: manipulation;
@@ -529,6 +555,17 @@
 .overlay-card.narrow {
   max-width: 420px;
   text-align: center;
+}
+/* Строка решения на паузе: цифра должна читаться как цифра */
+.pause-state {
+  margin: 10px 0 0;
+  font-size: 15px;
+  font-weight: 800;
+  color: #8fe3a8;
+  font-variant-numeric: tabular-nums;
+}
+.pause-state.loss {
+  color: #ff9e9e;
 }
 .overlay-card h2 {
   margin: 2px 0 12px;
@@ -578,6 +615,13 @@
 }
 .touch-instructions {
   display: none;
+}
+.intro-goal {
+  clear: both;
+  margin: 10px 0 0;
+  font-size: 13px;
+  font-weight: 700;
+  color: #ffd85e;
 }
 @media (hover: none) and (pointer: coarse) {
   .touch-instructions {
@@ -712,6 +756,15 @@
 .result-stars .off {
   color: #3d5a4f;
   text-shadow: none;
+}
+.result-caption {
+  margin: 5px 0 0;
+  font-size: 13px;
+  font-weight: 700;
+  color: #9fc4b6;
+}
+.result-caption:empty {
+  display: none;
 }
 .grade > div {
   min-width: 0;
@@ -966,8 +1019,8 @@ body[data-page="drive"] .drive .eyebrow {
   .hud-economy {
     grid-template-columns: 1.45fr 1fr;
   }
-  .hud-economy > span:nth-child(1),
-  .hud-economy > span:nth-child(4) {
+  .hud-economy .eco-revenue,
+  .hud-economy .eco-when {
     display: none;
   }
   .hud-actions {
@@ -1093,6 +1146,11 @@ body[data-page="drive"] .drive .eyebrow {
   font-weight: 800;
   padding: 5px 10px;
   cursor: pointer;
+}
+/* Кнопка-переключатель в шапке обязана выглядеть включённой, а не только называться */
+.drive-modes button[aria-pressed="true"] {
+  border-color: #ffd85e;
+  color: #ffd85e;
 }
 .board-filters button[aria-pressed="true"] {
   background: #d5ff5f;
@@ -1313,9 +1371,12 @@ body[data-page="drive"] .drive-top h1 {
 .hud-economy > span {
   display: none;
 }
-.hud-economy > span:nth-child(3),
-.hud-economy > span:nth-child(4) {
+.hud-economy .eco-profit,
+.hud-economy .eco-when {
   display: block;
+}
+.bribe-prompt small {
+  display: none;
 }
 .hud-economy small {
   font-size: 10px;

@@ -45,6 +45,9 @@ SLOTS = (
     "defeat",
     "cheer",
     "babachai",
+    "banani",
+    "slivi",
+    "vinograd",
     "go",
 )
 EXTENSIONS = {".mp3", ".ogg", ".wav", ".m4a"}

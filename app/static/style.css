@@ -30,3 +30,7 @@ textarea{font:inherit;border:1px solid #c7d1c0;border-radius:8px;padding:12px;re
 #active-trip .drive-cta{background:#2b4d44;border-color:#416d61;color:#d5ff5f;margin-top:10px}
 #reserve-drive{margin-top:14px;font-size:13px}
 @media(max-width:520px){.drive-cta{font-size:12px}}
+.active-note{font-size:13px;max-width:64ch}
+#active-trip .actions .drive-cta{margin-top:0}
+#active-trip button[data-return-rental]{background:#203e37;border-color:#6f8f83;color:#eaf3e6}
+#active-trip button[data-return-rental][data-armed]{background:#d5ff5f;border-color:#d5ff5f;color:#17312e}

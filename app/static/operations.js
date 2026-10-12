@@ -11,6 +11,7 @@ const auditLabels = {
   "car.available": "Возврат в автопарк",
   "support.answered": "Ответ на обращение",
   "support.closed": "Закрытие обращения",
+  "rental.force_closed": "Завершение зависшей поездки",
 };
 const pages = { support: 0, inbox: 0, rentals: 0, audit: 0 };
 let editCarId = null,
@@ -55,10 +56,13 @@ async function adminRentals() {
   if (epoch !== operationsEpoch) return;
   $("admin-rentals").innerHTML =
     rows
-      .map(
-        (r) =>
-          `<article class="trip"><div><strong>№${r.id} · ${escape(r.car_name)} · ${escape(r.plate)}</strong><p>${labels[r.status]} · ${new Date(r.created_at).toLocaleString("ru-RU")} · ${money(r.total_kopecks)}</p></div></article>`,
-      )
+      .map((r) => {
+        const stale =
+          r.status === "active" &&
+          r.closeable_at &&
+          new Date(r.closeable_at) <= new Date(r.server_now);
+        return `<article class="trip"><div><strong>№${r.id} · ${escape(r.car_name)} · ${escape(r.plate)}</strong><p>${labels[r.status]} · ${new Date(r.created_at).toLocaleString("ru-RU")} · ${money(r.total_kopecks)}</p></div><div class="actions">${stale ? `<button data-close-rental="${r.id}">Завершить зависшую</button>` : ""}</div></article>`;
+      })
       .join("") || "<p>Поездки не найдены.</p>";
   pageButtons("admin-rentals", pages.rentals, rows.length);
 }
@@ -218,6 +222,26 @@ document.addEventListener("click", (e) => {
 });
 if ($("edit-car-close"))
   $("edit-car-close").onclick = () => $("edit-car-dialog").close();
+
+/* Зависшую поездку закрывает админ: сервер пускает только спустя 90 минут */
+document.addEventListener("click", async (e) => {
+  const b = e.target.closest("[data-close-rental]");
+  if (!b) return;
+  b.disabled = true;
+  try {
+    await api("/admin/rentals/" + b.dataset.closeRental + "/close", {
+      method: "POST",
+    });
+    await adminRentals();
+    message(
+      "Поездка №" + b.dataset.closeRental + " закрыта, машина в автопарке",
+    );
+  } catch (error) {
+    message(error.message);
+    b.disabled = false;
+  }
+});
+
 if ($("edit-car-form"))
   $("edit-car-form").onsubmit = async (e) => {
     e.preventDefault();

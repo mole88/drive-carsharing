@@ -8,10 +8,10 @@ from sqlalchemy.orm import Session
 
 from app.core.db import get_db
 from app.core.security import current_user
-from app.models import Rental, User
+from app.models import AuditEvent, Rental, User
 from app.schemas import FinishInput, GameFinishInput, RentalOut, ReserveInput
 from app.services import rentals
-from app.services.rentals import expire_reservations, rental_view
+from app.services.rentals import expire_rentals, rental_view
 
 router = APIRouter(prefix="/api/rentals", tags=["Аренда"])
 
@@ -23,7 +23,7 @@ def my_rentals(
     limit: int = Query(50, ge=1, le=100),
     offset: int = Query(0, ge=0),
 ):
-    rentals.expire_reservations(db)
+    rentals.expire_rentals(db)
     rows = db.scalars(
         select(Rental)
         .where(Rental.user_id == user.id)
@@ -46,6 +46,11 @@ def start(rental_id: int, user: User = Depends(current_user), db: Session = Depe
     return rentals.rental_view(db, rentals.transition(db, user.id, rental_id, "start"))
 
 
+@router.post("/{rental_id}/heartbeat", response_model=RentalOut)
+def heartbeat(rental_id: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    return rentals.rental_view(db, rentals.heartbeat(db, user.id, rental_id))
+
+
 @router.post("/{rental_id}/cancel", response_model=RentalOut, tags=["Аренда"])
 def cancel(rental_id: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
     return rentals.rental_view(db, rentals.transition(db, user.id, rental_id, "cancel"))
@@ -61,6 +66,33 @@ def finish(
     return rentals.rental_view(db, rentals.transition(db, user.id, rental_id, "finish", data))
 
 
+@router.post("/{rental_id}/return", response_model=RentalOut, tags=["Аренда"])
+def return_rental(
+    rental_id: int, user: User = Depends(current_user), db: Session = Depends(get_db)
+):
+    """Вернуть машину, не входя в игру — выход для зависшей поездки.
+
+    Пока поездка свежая, сдача машины идёт через /drive и считается по
+    наигранному времени. После порога поездка считается брошенной, и у
+    владельца должен остаться способ вывести себя из неё без администратора:
+    на проде админских аккаунтов нет, а закрытая поездка держит машину.
+    """
+    try:
+        rental = rentals.close_stale(db, rental_id, owner_id=user.id)
+        db.add(
+            AuditEvent(
+                actor_id=user.id,
+                action="rental.self_returned",
+                target=f"rental:{rental_id}",
+            )
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    return rental_view(db, rental)
+
+
 @router.get("/summary")
 def summary(user: User = Depends(current_user), db: Session = Depends(get_db)):
     count, total = db.execute(
@@ -73,7 +105,7 @@ def summary(user: User = Depends(current_user), db: Session = Depends(get_db)):
 
 @router.get("/current", response_model=RentalOut | None)
 def current(user: User = Depends(current_user), db: Session = Depends(get_db)):
-    expire_reservations(db)
+    expire_rentals(db)
     rental = db.scalar(
         select(Rental).where(Rental.user_id == user.id, Rental.status.in_(["reserved", "active"]))
     )
@@ -88,7 +120,7 @@ def receipt(rental_id: int, user: User = Depends(current_user), db: Session = De
     if rental.status != "completed":
         raise HTTPException(409, "Итоги доступны после завершения поездки")
     trip = rental_view(db, rental)
-    minutes = max(1, ceil((rental.finished_at - rental.started_at).total_seconds() / 60))
+    minutes = max(1, ceil(rental.total_kopecks / rental.rate_kopecks))
     if rental.game_result and "charged_minutes" in rental.game_result:
         minutes = rental.game_result["charged_minutes"]
 
@@ -139,7 +171,7 @@ def receipt(rental_id: int, user: User = Depends(current_user), db: Session = De
 
 @router.get("/{rental_id}", response_model=RentalOut)
 def get_rental(rental_id: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
-    expire_reservations(db)
+    expire_rentals(db)
     rental = db.get(Rental, rental_id)
     if not rental or rental.user_id != user.id:
         raise HTTPException(404, "Поездка не найдена")

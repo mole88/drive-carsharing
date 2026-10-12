@@ -212,10 +212,23 @@
     const charge = total - world.stats.rentalCost;
     if (charge <= 0) return;
     const paid = Math.min(world.player.cash, charge);
+    const debtBefore = world.player.rentalDebt;
     world.player.cash -= paid;
     world.player.rentalDebt += charge - paid;
     world.stats.rentalCost = total;
     emit(world, "rent", { cost: charge, total });
+    /* Долг по тарифу — второй способ проиграть смену (12 минут = broke), а
+       момент его появления раньше был нем и без подписи: тикал только `rent`. */
+    if (debtBefore <= 0 && world.player.rentalDebt > 0) {
+      popText(
+        world,
+        "ДОЛГ ПО ТАРИФУ",
+        world.player.x,
+        world.player.y - 190,
+        "bad",
+      );
+      emit(world, "debtStart", { debt: world.player.rentalDebt });
+    }
   }
 
   function credit(world, baseValue) {
@@ -233,19 +246,51 @@
     );
   }
 
+  /* Касса возврата — четверть набежавших очков плюс целые бамперы и тихий розыск.
+     Считается на ходу, чтобы HUD и итог показывали одну и ту же цифру. */
+  function cashoutAt(world) {
+    if (profit(world) <= 0) return 0;
+    const p = world.player;
+    return Math.round(
+      p.score * 0.25 + p.hearts * 4000 + (p.heat < 1 ? 8000 : 0),
+    );
+  }
+
+  function killerOf(world) {
+    if (world.status === "quit") return "retired";
+    if (world.status === "broke") return "debt";
+    return world.killer || "wreck";
+  }
+
+  /* Три акта смены. fromLevel — когда акт начинается и что он открывает: со 2-го
+     индекса на дорогу выезжают барьеры, с 1-го летают БПЛА. Третий акт начинается
+     с уровня 5 (88 с), а не с 7: замеры прода дают сессию 100–136 с, и при
+     пороге 7 финальный акт и барьеры не успевали появиться — 1 показ из 9 заездов. */
   const PHASES = [
-    { name: "Дворы", tint: "dusk" },
-    { name: "Проспект", tint: "night" },
-    { name: "Неоновый пик", tint: "neon" },
+    { name: "Дворы", tint: "dusk", fromLevel: 1 },
+    {
+      name: "Проспект",
+      tint: "night",
+      fromLevel: 4,
+      hint: "В НЕБЕ — БПЛА",
+    },
+    {
+      name: "Неоновый пик",
+      tint: "neon",
+      fromLevel: 5,
+      hint: "НА ДОРОГЕ — ЛЕЖАЧИЙ ПАТУЛЬНЫЙ",
+    },
   ];
 
   /* Оценка по очкам: пороги привязаны к длине забега (~3900 очков/сек на полном газу) */
+  /* Пороги сняты с реальных заездов игроков (прод: 22 503…99 820 очков, медиана
+     ~59 000), а не с ботов-оракулов: прежде лучший человеческий заезд давал D. */
   const GRADES = [
-    { grade: "S", score: 1700000, title: "Король ночного проспекта" },
-    { grade: "A", score: 950000, title: "Легенда района" },
-    { grade: "B", score: 470000, title: "Ночной завсегдатай" },
-    { grade: "C", score: 200000, title: "Довольно бодро" },
-    { grade: "D", score: 0, title: "Первая practice-смена" },
+    { grade: "S", score: 350000, stars: 4, title: "Король ночного проспекта" },
+    { grade: "A", score: 180000, stars: 3, title: "Легенда района" },
+    { grade: "B", score: 90000, stars: 2, title: "Ночной завсегдатай" },
+    { grade: "C", score: 40000, stars: 1, title: "Довольно бодро" },
+    { grade: "D", score: 0, stars: 0, title: "Первая смена" },
   ];
 
   const RULES = {
@@ -263,6 +308,12 @@
     bribePerHeat: 50000,
     bribeEscalation: 0.02,
     bribeWindow: 1.5,
+    /* Первый контакт в смене — обучающее окно: новичок успевает сообразить, что даёт Пробел */
+    bribeWindowFirst: 2.6,
+    /* Цена договорённости и цена молчания: штраф — доля суммы, розыск остывает на */
+    bribeHeatRelief: 2.2,
+    protocolFineRatio: 0.5,
+    protocolHeatRelief: 1.4,
     droneLock: 1.35,
     droneHover: 0.9,
     nitroCost: 34,
@@ -353,7 +404,7 @@
       world.pickups,
     ])
       for (const entity of list)
-        nextId = Math.max(nextId, (entity.id || 0) + 1);
+        world.nextId = Math.max(world.nextId, (entity.id || 0) + 1);
     world.events = [];
     return world;
   }
@@ -366,8 +417,6 @@
       0,
       WORLD.lanes - 1,
     );
-
-  let nextId = 1;
 
   function createRun(options) {
     const cfg = options || {};
@@ -397,6 +446,7 @@
       time: 0,
       level: 1,
       levelShown: 1,
+      nextId: 1,
       corridor: Math.floor(WORLD.lanes / 2),
       raid: {
         y: WORLD.playerY + RULES.raidGap,
@@ -416,6 +466,7 @@
         rentalCost: 0,
         bribes: 0,
         failedBribes: 0,
+        encounters: 0,
         rams: 0,
         dronesDown: 0,
         dodges: 0,
@@ -475,10 +526,13 @@
   }
 
   function phaseInfo(world) {
-    const index = Math.min(
-      PHASES.length - 1,
-      Math.floor((world.level - 1) / 3),
-    );
+    let index = 0;
+    for (let k = PHASES.length - 1; k >= 0; k--) {
+      if (world.level >= PHASES[k].fromLevel) {
+        index = k;
+        break;
+      }
+    }
     return Object.assign({ index, bonus: bonusAt(world.level) }, PHASES[index]);
   }
 
@@ -492,7 +546,7 @@
     const y = o.y === undefined ? -140 - rng() * 420 : o.y;
     const edge = fromLeft ? 46 : WORLD.width - 46;
     const target = {
-      id: nextId++,
+      id: world.nextId++,
       x: o.x === undefined ? edge : o.x,
       y,
       startY: y,
@@ -560,7 +614,7 @@
     )
       return;
     const cop = {
-      id: nextId++,
+      id: world.nextId++,
       x,
       y,
       vx: 0,
@@ -585,7 +639,7 @@
     if (world.drones.length >= droneCapAt(world.level)) return;
     const rng = world.rng;
     const drone = {
-      id: nextId++,
+      id: world.nextId++,
       x: WORLD.roadLeft + rng() * (WORLD.roadRight - WORLD.roadLeft),
       y: -80,
       hoverY: 300 + rng() * 110,
@@ -630,7 +684,7 @@
       },
     }[kind];
     world.props.push({
-      id: nextId++,
+      id: world.nextId++,
       kind,
       lane,
       x: WORLD.laneCenters[lane] + (rng() - 0.5) * 30,
@@ -675,7 +729,7 @@
     )
       return;
     world.pickups.push({
-      id: nextId++,
+      id: world.nextId++,
       kind,
       x,
       y,
@@ -801,7 +855,10 @@
       emit(world, "graze", { source });
       return false;
     }
-    p.armor = 0;
+    /* Остаток переносится, а не сгорает: HUD рисует износ дробно
+       (Math.floor(p.armor * 4)), и обнуление счётчика прощало игроку до
+       0,9 бампера за каждый удар, противореча тому, что показывает полоска. */
+    p.armor -= 1;
     p.hearts -= 1;
     p.invuln = RULES.invuln;
     p.chain = 0;
@@ -816,6 +873,7 @@
     emit(world, "damage", { source, hearts: p.hearts });
     if (p.hearts <= 0) {
       p.hearts = 0;
+      world.killer = source;
       world.status = "wrecked";
       emit(world, "end", { reason: "wrecked" });
     }
@@ -902,11 +960,15 @@
     const p = world.player;
     if (p.encounter || p.invuln > 0) return false;
     const cost = bribeCost(world);
+    const first = world.stats.encounters === 0;
+    world.stats.encounters += 1;
+    const window = first ? RULES.bribeWindowFirst : RULES.bribeWindow;
     cop.mode = "block";
     cop.alongside = 1;
     p.encounter = {
       copId: cop.id,
-      timer: RULES.bribeWindow,
+      timer: window,
+      window,
       cost,
       shown: cost,
       pressed: false,
@@ -930,7 +992,7 @@
     p.cash -= p.encounter.cost;
     world.stats.cashSpent += p.encounter.cost;
     world.stats.bribes += 1;
-    p.heat = clamp(p.heat - 2.2, 0, 6);
+    p.heat = clamp(p.heat - RULES.bribeHeatRelief, 0, 6);
     p.nitro = clamp(p.nitro + 12, 0, 100);
     p.score += 260 + Math.round(p.heat * 120);
     p.invuln = Math.max(p.invuln, 0.8);
@@ -955,11 +1017,13 @@
     const cop = world.cops.find((c) => c.id === p.encounter.copId);
     if (!paid) {
       world.stats.failedBribes += 1;
-      const fine = Math.round(Math.min(p.cash, p.encounter.cost * 0.5));
+      const fine = Math.round(
+        Math.min(p.cash, p.encounter.cost * RULES.protocolFineRatio),
+      );
       p.cash -= fine;
       world.stats.cashSpent += fine;
-      p.heat = clamp(p.heat - 1.4, 0, 6);
-      damage(world, RULES.damage.protocol, "protocol");
+      p.heat = clamp(p.heat - RULES.protocolHeatRelief, 0, 6);
+      const smashed = damage(world, RULES.damage.protocol, "protocol");
       p.invuln = Math.max(p.invuln, RULES.invuln);
       if (fine > 0)
         popText(
@@ -970,6 +1034,10 @@
           "bad",
         );
       else popText(world, "ПРОТОКОЛ!", p.x, p.y - 210, "bad");
+      /* «БАМ!» общий у всех ударов, и новичок не связывает деньги с бампером:
+         из 16 новичковых заездов 16 кончились протоколом, а штраф деньгами он
+         видит, минус бампера — нет. Называем только когда бампер правда ушёл. */
+      if (smashed) popText(world, "−1 БАМПЕР", p.x, p.y - 252, "bad");
       emit(world, "protocol", { fine });
     }
     if (cop) {
@@ -1286,8 +1354,7 @@
                 "bad",
               );
           } else {
-            world.stats.dodges += 0;
-            popText(world, "ЕСТЬ!", p.x, p.y - 150, "bad");
+            popText(world, "БЕЗ УРОНА!", d.x, d.y - 40, "good");
           }
           d.state = "crash";
           d.vy = 0;
@@ -1498,6 +1565,14 @@
     return GRADES[GRADES.length - 1];
   }
 
+  /* Ступень над текущей. Таблица идёт сверху вниз (S…D), поэтому ищем с конца:
+     первый сверху элемент больше очков — это потолок таблицы, а не сосед. */
+  function nextGrade(score) {
+    for (let k = GRADES.length - 1; k >= 0; k--)
+      if (score < GRADES[k].score) return GRADES[k];
+    return null;
+  }
+
   function finish(world, reason) {
     if (world.result) return world.result;
     chargeRental(world);
@@ -1506,16 +1581,13 @@
     /* Добровольно вернуть машину — касса плюс бонус за целые бамперы.
        Разбился или ушёл в минус по договору — ничего не доначисляется. */
     const retired = world.status === "quit";
-    /* Касса возврата — четверть набежавших очков плюс целые бамперы и тихий розыск */
-    const bonus =
-      retired && profit(world) > 0
-        ? Math.round(p.score * 0.25 + p.hearts * 4000 + (p.heat < 1 ? 8000 : 0))
-        : 0;
+    const bonus = retired ? cashoutAt(world) : 0;
     p.score += bonus;
     world.cashBonus = bonus;
     const g = grade(p.score);
     world.result = {
       reason: world.status,
+      killer: killerOf(world),
       grade: g.grade,
       title: g.title,
       score: p.score,
@@ -1554,8 +1626,7 @@
       raidHits: world.raid.hits,
       raidKmh: Math.round(raidKmhAt(world.level)),
       time: Math.round(world.time),
-      stars:
-        g.grade === "S" ? 3 : g.grade === "A" ? 2 : g.grade === "B" ? 1 : 0,
+      stars: g.stars,
     };
     emit(world, "finished", { reason: world.status });
   }
@@ -1586,7 +1657,11 @@
     if (phase.index !== world.phase) {
       world.phase = phase.index;
       world.phaseName = phase.name;
-      emit(world, "phase", { name: phase.name, index: phase.index });
+      emit(world, "phase", {
+        name: phase.name,
+        index: phase.index,
+        hint: phase.hint || "",
+      });
     }
     updateTargets(world, frame, scroll);
     updateCops(world, frame, scroll, input2);
@@ -1650,8 +1725,10 @@
     step,
     phaseInfo,
     grade,
+    nextGrade,
     comboOf,
     bribeCost,
+    cashoutAt,
     laneAt,
     spawnTarget,
     spawnCop,

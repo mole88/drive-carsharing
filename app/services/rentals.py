@@ -2,24 +2,26 @@ from datetime import timedelta
 from math import ceil
 
 from fastapi import HTTPException
-from sqlalchemy import update
+from sqlalchemy import func, update
 from sqlalchemy.exc import IntegrityError
 
-from app.models import Car, Rental, utcnow
+from app.models import AuditEvent, Car, Rental, utcnow
 from app.services import game, trip
 
 RESERVATION_MINUTES = 20
+STALE_TRIP_MINUTES = 90
 
 
-def expire_reservations(db):
+def expire_rentals(db, exclude_active_id=None):
     """Conditional updates arbitrate expiration against concurrent starts/cancellations."""
-    cutoff = utcnow() - timedelta(minutes=RESERVATION_MINUTES)
+    now = utcnow()
+    cutoff = now - timedelta(minutes=RESERVATION_MINUTES)
     try:
         expired = (
             db.execute(
                 update(Rental)
                 .where(Rental.status == "reserved", Rental.created_at <= cutoff)
-                .values(status="cancelled", finished_at=utcnow())
+                .values(status="cancelled", finished_at=now)
                 .returning(Rental.car_id)
             )
             .scalars()
@@ -31,10 +33,110 @@ def expire_reservations(db):
                 .where(Car.id.in_(expired), Car.status == "reserved")
                 .values(status="available")
             )
+        query = update(Rental).where(
+            Rental.status == "active",
+            func.coalesce(Rental.last_activity_at, Rental.started_at, Rental.created_at)
+            <= now - timedelta(minutes=STALE_TRIP_MINUTES),
+        )
+        if exclude_active_id is not None:
+            query = query.where(Rental.id != exclude_active_id)
+        abandoned = db.execute(
+            query.values(
+                status="completed",
+                finished_at=now,
+                finish_address=Rental.pickup_address,
+                total_kopecks=Rental.rate_kopecks,
+            ).returning(Rental.id, Rental.user_id, Rental.car_id)
+        ).all()
+        for rental_id, user_id, car_id in abandoned:
+            db.execute(
+                update(Car)
+                .where(Car.id == car_id, Car.status == "rented")
+                .values(status="available")
+            )
+            db.add(
+                AuditEvent(actor_id=user_id, action="rental.expired", target=f"rental:{rental_id}")
+            )
         db.commit()
     except Exception:
         db.rollback()
         raise
+
+
+def close_stale(db, rental_id, owner_id=None):
+    """Закрытие брошенной поездки — администратором или самим владельцем.
+
+    Игрового результата нет — клиент его так и не прислал, поэтому поездка
+    считается по минимуму договора (одна минута тарифа), а машина возвращается
+    в строй. Свежие поездки закрывать нельзя: у игрока ещё есть шанс сам
+    вернуть машину через /drive, и только там списывается наигранное время.
+    Порог общий для обоих путей, иначе поездку можно было бы закрыть раньше,
+    чем игра успела бы посчитать стоимость.
+    """
+    expire_rentals(db, exclude_active_id=rental_id)
+    rental = db.get(Rental, rental_id)
+    if not rental or (owner_id is not None and rental.user_id != owner_id):
+        raise HTTPException(404, "Аренда не найдена")
+    if rental.status != "active":
+        raise HTTPException(409, "Закрыть можно только начатую поездку")
+    started = rental.last_activity_at or rental.started_at or rental.created_at
+    if utcnow() - started < timedelta(minutes=STALE_TRIP_MINUTES):
+        raise HTTPException(
+            409,
+            f"С последней активности прошло меньше {STALE_TRIP_MINUTES} минут",
+        )
+    now = utcnow()
+    changed = db.execute(
+        update(Rental)
+        .where(
+            Rental.id == rental_id,
+            Rental.status == "active",
+            func.coalesce(Rental.last_activity_at, Rental.started_at, Rental.created_at)
+            <= now - timedelta(minutes=STALE_TRIP_MINUTES),
+        )
+        .values(
+            status="completed",
+            finished_at=now,
+            finish_address=rental.pickup_address,
+            total_kopecks=rental.rate_kopecks,
+        )
+    )
+    if changed.rowcount != 1:
+        db.rollback()
+        raise HTTPException(409, "Поездка уже изменена, обновите список")
+    db.execute(
+        update(Car)
+        .where(Car.id == rental.car_id, Car.status == "rented")
+        .values(status="available")
+    )
+    db.flush()
+    db.refresh(rental)
+    return rental
+
+
+def heartbeat(db, user_id, rental_id):
+    rental = db.get(Rental, rental_id)
+    if not rental or rental.user_id != user_id:
+        raise HTTPException(404, "Поездка не найдена")
+    now = utcnow()
+    changed = db.execute(
+        update(Rental)
+        .where(
+            Rental.id == rental_id,
+            Rental.user_id == user_id,
+            Rental.status == "active",
+            func.coalesce(Rental.last_activity_at, Rental.started_at, Rental.created_at)
+            > now - timedelta(minutes=STALE_TRIP_MINUTES),
+        )
+        .values(last_activity_at=now)
+    )
+    if changed.rowcount != 1:
+        db.rollback()
+        expire_rentals(db)
+        raise HTTPException(409, "Поездка завершена или ещё не началась")
+    db.commit()
+    db.refresh(rental)
+    return rental
 
 
 def rental_view(db, rental):
@@ -46,6 +148,12 @@ def rental_view(db, rental):
         address=rental.finish_address or rental.pickup_address or car.address,
     )
     result["expires_at"] = rental.created_at + timedelta(minutes=RESERVATION_MINUTES)
+    result["closeable_at"] = (
+        (rental.last_activity_at or rental.started_at or rental.created_at)
+        + timedelta(minutes=STALE_TRIP_MINUTES)
+        if rental.status == "active"
+        else None
+    )
     result["server_now"] = utcnow()
     result["estimated_kopecks"] = (
         max(1, ceil((utcnow() - rental.started_at).total_seconds() / 60)) * rental.rate_kopecks
@@ -56,7 +164,7 @@ def rental_view(db, rental):
 
 
 def reserve(db, user_id, car_id, expected_rate=None):
-    expire_reservations(db)
+    expire_rentals(db)
     try:
         query = update(Car).where(Car.id == car_id, Car.status == "available", Car.fuel >= 10)
         if expected_rate is not None:
@@ -85,7 +193,7 @@ def reserve(db, user_id, car_id, expected_rate=None):
 
 
 def transition(db, user_id, rental_id, action, finish=None):
-    expire_reservations(db)
+    expire_rentals(db)
     expected, target, car_status = {
         "start": ("reserved", "active", "rented"),
         "cancel": ("reserved", "cancelled", "available"),
@@ -99,6 +207,7 @@ def transition(db, user_id, rental_id, action, finish=None):
         values = {"status": target}
         if action == "start":
             values["started_at"] = now
+            values["last_activity_at"] = now
         elif action == "finish":
             if rental.started_at is None:
                 raise HTTPException(409, "Поездка ещё не началась")
@@ -127,6 +236,7 @@ def transition(db, user_id, rental_id, action, finish=None):
 
 def finish_game(db, user_id, rental_id, data):
     """Complete the rental and its immutable game outcome in one transaction."""
+    expire_rentals(db)
     try:
         rental = db.get(Rental, rental_id)
         if not rental or rental.user_id != user_id:
@@ -160,6 +270,8 @@ def finish_game(db, user_id, rental_id, data):
             category=car.category,
             week=game.week_of(now),
             best_combo=data.best_combo,
+            killer=data.killer,
+            dodges=data.dodges,
         )
         # Old clients and historical outcomes retain their previous billing rules.
         minutes = max(1, ceil(elapsed / 60))

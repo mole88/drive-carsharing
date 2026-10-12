@@ -24,7 +24,7 @@ def cars(
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
 ):
-    rentals.expire_reservations(db)
+    rentals.expire_rentals(db)
     query = select(Car)
     if search.strip():
         term = search.strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
@@ -52,6 +52,7 @@ def cars(
 
 @router.get("/cars/{car_id}", response_model=CarOut, tags=["Автопарк"])
 def car_details(car_id: int, db: Session = Depends(get_db)):
+    rentals.expire_rentals(db)
     car = db.get(Car, car_id)
     if car is None:
         raise HTTPException(404, "Автомобиль не найден")

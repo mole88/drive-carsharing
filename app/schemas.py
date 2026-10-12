@@ -73,8 +73,11 @@ class RentalOut(BaseModel):
     pickup_address: str
     finish_address: str | None
     game_result: dict | None = None
+    closeable_at: datetime | None = None
 
-    @field_serializer("created_at", "started_at", "finished_at", "expires_at", "server_now")
+    @field_serializer(
+        "created_at", "started_at", "finished_at", "expires_at", "server_now", "closeable_at"
+    )
     def serialize_utc(self, value):
         return value.isoformat() + "Z" if value else None
 
@@ -89,6 +92,7 @@ class ScoreInput(BaseModel):
     level: int = Field(ge=1, le=60)
     knockdowns: int = Field(ge=0, le=30000)
     drones: int = Field(ge=0, le=3000, default=0)
+    dodges: int = Field(ge=0, le=3000, default=0)
     bribes: int = Field(ge=0, le=3000, default=0)
     profit_kopecks: int = Field(ge=-100000000, le=100000000, default=0)
     duration_seconds: int = Field(ge=10, le=7200)
@@ -101,6 +105,22 @@ class GameFinishInput(ScoreInput):
     time_scale: Literal[40] | None = None
     duration_ms: int | None = Field(default=None, ge=0, le=7200000)
     distance_meters: int | None = Field(default=None, ge=0, le=10000000)
+    # Что закончило смену: только список ядра, экран итогов подставляет метки сам.
+    killer: (
+        Literal[
+            "drone",
+            "raid",
+            "protocol",
+            "pothole",
+            "barrier",
+            "oil",
+            "cone",
+            "debt",
+            "retired",
+            "wreck",
+        ]
+        | None
+    ) = None
 
 
 class ScoreOut(BaseModel):

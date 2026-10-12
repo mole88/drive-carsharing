@@ -11,7 +11,9 @@
   const W = core.WORLD;
   const RECORD_KEY = "drive.nightshift.records.v2";
   const VOLUME_KEY = "drive.nightshift.volume.v1";
+  const CALM_KEY = "drive.nightshift.calm.v1";
   const RUN_KEY = "drive.rental.run.v1.";
+  const INTRO_HELP_KEY = "drive.intro.help.v1";
 
   const state = {
     world: null,
@@ -42,13 +44,40 @@
     lastSaved: 0,
   };
 
+  let calmQuery = null;
   try {
-    state.calm = matchMedia("(prefers-reduced-motion: reduce)").matches;
+    calmQuery = matchMedia("(prefers-reduced-motion: reduce)");
   } catch (error) {
     void error;
   }
 
+  /* Явный выбор игрока старшие настройки ОС: иначе «мигать» пришлось бы
+     включать заново после каждой перезагрузки. */
+  const savedCalm = () => {
+    try {
+      const value = JSON.parse(localStorage.getItem(CALM_KEY)).calm;
+      return value === true || value === false ? value : null;
+    } catch (error) {
+      void error;
+      return null;
+    }
+  };
+  const calmChosen = savedCalm();
+  state.calm =
+    calmChosen === null ? !!(calmQuery && calmQuery.matches) : calmChosen;
+
   const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
+  /* На телефоне клавиши Пробел нет — подсказки должны говорить про экранные кнопки. */
+  const coarsePointer =
+    typeof matchMedia === "function" &&
+    matchMedia("(hover: none) and (pointer: coarse)").matches;
+  /* Легенда одна на интро и на паузе: на телефоне клавиш нет, и показывать
+     обоим экранам A/D — значит ничего не объяснить. */
+  const KEYS_HELP =
+    "A/D — руль · W/S — газ/тормоз · Shift — нитро · Пробел — взятка · P — пауза · V — вернуть машину";
+  const TOUCH_HELP =
+    "Веди пальцем по дороге · кнопки под игрой: «Взятка» при контакте и «Нитро» для тарана · «Вернуть машину» и пауза — вверху экрана";
+  const helpText = () => (coarsePointer ? TOUCH_HELP : KEYS_HELP);
   const depth = (y) => 0.8 + 0.36 * clamp(y / W.height, 0, 1);
   function cheer() {
     const now = state.world ? state.world.time : 0;
@@ -408,10 +437,17 @@
     cone: "cone",
     spin: "spin",
     shieldBreak: "shield",
+    nitroEnd: "nitroEnd",
+    powerEnd: "powerEnd",
+    droneMiss: "droneMiss",
+    debtStart: "debt",
     phase: "phase",
     level: "phase",
     raidClose: "siren",
   };
+
+  /* Реплика на сбитый силуэт: бросок один, поэтому четыре голоса не накладываются. */
+  const KNOCK_VOICES = ["babachai", "banani", "slivi", "vinograd"];
 
   function consumeEvents() {
     const world = state.world;
@@ -432,7 +468,10 @@
         if (!state.calm)
           state.shake = Math.min(26, state.shake + (e.vip ? 16 : 9));
         if (e.combo >= 5 && e.combo % 5 === 0) cheer();
-        if (Math.random() < 0.06) audio.sfx("babachai");
+        if (Math.random() < 0.08)
+          audio.sfx(
+            KNOCK_VOICES[Math.floor(Math.random() * KNOCK_VOICES.length)],
+          );
       }
       if (e.type === "damage" || e.type === "ram") {
         state.flash = 0.32;
@@ -450,6 +489,8 @@
           ttl: 2,
           vy: -14,
         });
+        /* Новый акт = новая опасность. Её называем сразу, а не по факту удара. */
+        if (e.hint) worldPop(world, e.hint, W.width / 2, 452, "bad", 2.2, 0.55);
       }
       if (e.type === "level" && e.level % 4 === 0)
         worldPop(world, "ДАВЛЕНИЕ " + e.level, W.width / 2, 500, "bad", 1.5);
@@ -738,13 +779,19 @@
   function retireLabel(world) {
     const btn = $("hud-retire");
     if (!btn) return;
-    const net = core.profit(world);
+    const cashout = core.cashoutAt(world);
     const label = "Вернуть машину";
-    if (state.retireLabel !== label) {
-      state.retireLabel = label;
-      btn.textContent = label;
-      btn.classList.toggle("risky", net <= 0);
-    }
+    const hint =
+      cashout > 0
+        ? "Касса возврата +" +
+          cashout.toLocaleString("ru-RU") +
+          " очков сгорит, если разобьёшься"
+        : "Прибыль отрицательная: возврат ничего не доплачивает";
+    if (state.retireLabel === label + hint) return;
+    state.retireLabel = label + hint;
+    btn.textContent = label;
+    btn.title = hint;
+    btn.classList.toggle("risky", cashout <= 0);
   }
 
   function hud(dt) {
@@ -775,6 +822,10 @@
     const net = core.profit(world);
     $("hud-profit").textContent = money(net);
     $("hud-profit").classList.toggle("loss", net < 0);
+    const cashout = core.cashoutAt(world);
+    const cashoutEl = $("hud-cashout");
+    cashoutEl.hidden = cashout <= 0;
+    cashoutEl.textContent = "+" + cashout.toLocaleString("ru-RU") + " очк.";
     $("hud-rate").textContent = money(world.car.rateKopecks) + "/мин";
     $("hud-debt").hidden = p.rentalDebt <= 0;
     $("hud-debt").textContent = "Долг за аренду: " + money(p.rentalDebt);
@@ -845,6 +896,8 @@
     }
 
     const prompt = $("bribe-prompt");
+    const bribeBtn = $("touch-bribe");
+    if (bribeBtn) bribeBtn.classList.toggle("armed", !!p.encounter);
     $("hud-retire").hidden = !!p.encounter;
     if (!!p.encounter !== state.ducked) {
       state.ducked = !!p.encounter;
@@ -854,13 +907,40 @@
       prompt.hidden = false;
       $("bribe-cost").textContent = money(p.encounter.cost);
       $("bribe-fill").style.width =
-        clamp(p.encounter.timer / core.RULES.bribeWindow, 0, 1) * 100 + "%";
+        clamp(
+          p.encounter.timer / (p.encounter.window || core.RULES.bribeWindow),
+          0,
+          1,
+        ) *
+          100 +
+        "%";
       const broke = p.cash < p.encounter.cost;
       $("bribe-cost").parentElement.classList.toggle("insufficient", broke);
+      const firstContact =
+        (p.encounter.window || core.RULES.bribeWindow) > core.RULES.bribeWindow;
+      const payHint = coarsePointer ? "кнопка «Взятка»" : "ПРОБЕЛ";
       $("bribe-note").textContent = broke
         ? "не хватает денег"
-        : "ПРОБЕЛ / Взятка";
-    } else if (!prompt.hidden) prompt.hidden = true;
+        : firstContact
+          ? "ПЕРВЫЙ КОНТАКТ · " + payHint + " — взятка"
+          : payHint + " / Взятка";
+      /* Цена молчания и альтернатива деньгам: выбор должен читаться в момент диалога */
+      const alt = $("bribe-alt");
+      const fine = money(Math.round(p.encounter.cost * 0.5));
+      const canRam = p.nitro >= core.RULES.nitroCost && p.nitroTime <= 0;
+      const ram = coarsePointer ? "кнопкой «Нитро»" : "на нитро";
+      alt.textContent = canRam
+        ? "или таран " +
+          ram +
+          ": без оплаты, +розыск · иначе протокол " +
+          fine +
+          " и бампер"
+        : "иначе протокол: " + fine + " и минус бампер";
+      alt.hidden = false;
+    } else if (!prompt.hidden) {
+      prompt.hidden = true;
+      $("bribe-alt").hidden = true;
+    }
   }
 
   /* ---------- состояния ---------- */
@@ -869,6 +949,8 @@
     $("drive-intro").hidden = mode !== "intro";
     $("drive-pause").hidden = mode !== "paused";
     $("drive-result").hidden = mode !== "result";
+    /* На телефоне подсказка про клавиши бесполезна — легенда одна на оба экрана */
+    if (mode === "paused") $("pause-help").textContent = helpText();
     /* На итогах HUD прячем: он просвечивает сквозь затемнение оверлея */
     $("hud").hidden = mode === "intro" || mode === "result";
   }
@@ -884,10 +966,16 @@
     state.starting = true;
     $("drive-start").disabled = true;
     try {
+      localStorage.setItem(INTRO_HELP_KEY, "1");
+    } catch (error) {
+      /* Приватный режим: пусть шпаргалка остаётся открытой. */
+    }
+    try {
       if (state.rental.status === "reserved")
         state.rental = await api("/api/rentals/" + state.rental.id + "/start", {
           method: "POST",
         });
+      if (!(await heartbeat())) return;
       audio.unlock();
       const restored = restoreRun();
       if (!restored) {
@@ -922,10 +1010,27 @@
     if (state.mode === "result") location.assign("/cars");
   }
 
+  /* Пауза — точка, где игрок решает «рискнуть или сдать». Кнопка сдачи должна
+     называть цену решения здесь же, а не только плашкой в HUD. */
+  function paintPauseState() {
+    const world = state.world;
+    if (!world) return;
+    const cashout = core.cashoutAt(world);
+    const el = $("pause-state");
+    el.classList.toggle("loss", cashout <= 0);
+    el.textContent =
+      (cashout > 0
+        ? "Возврат сейчас: +" + cashout.toLocaleString("ru-RU") + " очк. кассой"
+        : "Возврат сейчас: кассы нет — прибыль отрицательная") +
+      " · прибыль " +
+      money(core.profit(world));
+  }
+
   function togglePause(force) {
     if (state.mode === "playing" || force === true) {
       if (state.mode !== "playing") return;
       setMode("paused");
+      paintPauseState();
       persistRun();
       audio.engine(false);
       audio.music(false);
@@ -945,13 +1050,50 @@
       ...options,
     });
     const data = await response.json().catch(() => ({}));
-    if (!response.ok)
-      throw new Error(
+    if (!response.ok) {
+      const error = new Error(
         typeof data.detail === "string"
           ? data.detail
           : "Не удалось сохранить поездку",
       );
+      error.status = response.status;
+      throw error;
+    }
     return data;
+  }
+
+  let heartbeatPending = false;
+  async function heartbeat() {
+    if (
+      heartbeatPending ||
+      document.hidden ||
+      !state.rental ||
+      state.rental.status !== "active" ||
+      state.mode === "result"
+    )
+      return true;
+    heartbeatPending = true;
+    try {
+      await api("/api/rentals/" + state.rental.id + "/heartbeat", {
+        method: "POST",
+      });
+      return true;
+    } catch (error) {
+      if ([401, 404, 409].includes(error.status)) {
+        if (state.mode === "playing") togglePause(true);
+        state.rental.status = "completed";
+        setMode("intro");
+        $("intro-car").textContent = "Поездка недоступна";
+        $("intro-perk").textContent =
+          "Вернитесь в каталог и выберите машину заново. " + error.message;
+        $("drive-start").hidden = true;
+        return false;
+      }
+      // A brief connection failure still leaves the 90-minute grace period.
+      return true;
+    } finally {
+      heartbeatPending = false;
+    }
   }
 
   function submitScore(result) {
@@ -967,6 +1109,7 @@
         level: result.level,
         knockdowns: result.knockdowns,
         drones: result.drones,
+        dodges: result.dodges,
         bribes: result.bribes,
         profit_kopecks: result.profit,
         duration_seconds: result.time,
@@ -974,6 +1117,7 @@
         duration_ms: result.durationMs,
         distance_meters: result.distanceMeters,
         reason: result.reason,
+        killer: result.killer,
         best_combo: result.bestCombo,
       }),
     });
@@ -1055,6 +1199,25 @@
     requestAnimationFrame(pump);
   }
 
+  /* Чем именно кончилась смена: ядро записывает источник последнего удара. */
+  const KILLER_LABEL = {
+    drone: "смену закончил БПЛА",
+    raid: "смену закончило оцепление",
+    protocol: "смену закончили протоколы",
+    pothole: "смену закончила яма",
+    barrier: "смену закончил лежачий патрульный",
+    debt: "смену закончил долг по аренде",
+    retired: "машину вернул сам",
+    wreck: "смену закончила авария",
+  };
+
+  function outcomeKiller(result) {
+    if (KILLER_LABEL[result.killer]) return KILLER_LABEL[result.killer];
+    if (result.reason === "quit") return KILLER_LABEL.retired;
+    if (result.reason === "broke") return KILLER_LABEL.debt;
+    return KILLER_LABEL.wreck;
+  }
+
   function paintOutcome(result) {
     $("result-title").textContent =
       result.reason === "wrecked"
@@ -1073,19 +1236,60 @@
     $("result-grade").textContent =
       result.grade || core.grade(result.score).grade;
     $("result-stars").innerHTML = "★".repeat(result.stars || 0);
+    /* Название ступени и зазор до следующей: без этой строки игрок с 39 289
+       очками при пороге C 40 000 получает «Первую смену» и не знает, что ему
+       не хватило 711 — таблица оценок молчит. */
+    const ladder = core.grade(result.score);
+    const next = core.nextGrade(result.score);
+    $("result-caption").textContent = next
+      ? ladder.title +
+        " · до «" +
+        next.title +
+        "» ещё " +
+        (next.score - result.score).toLocaleString("ru-RU") +
+        " очк."
+      : ladder.title + " · это потолок таблицы";
     $("result-gif").src =
       "/static/images/" + (result.won ? "smoking.gif" : "fuk.gif");
     $("result-gif").classList.toggle("win", !!result.won);
+    $("result-gif").hidden = false;
     $("result-stats").innerHTML =
-      `<li><span>Комбо</span><strong>×${result.bestCombo || 1}</strong></li><li><span>Сбито</span><strong>${result.knockdowns}</strong></li><li><span>Аренда</span><strong id="result-cost">…</strong></li>`;
+      `<li><span>Комбо</span><strong>×${result.bestCombo || 1}</strong></li>` +
+      `<li><span>Сбито</span><strong>${result.knockdowns}</strong></li>` +
+      (result.drones || result.dodges
+        ? `<li><span>БПЛА</span><strong>${result.drones || 0} сбит · ${result.dodges || 0} мимо</strong></li>`
+        : "") +
+      `<li><span>Финал</span><strong>${outcomeKiller(result)}</strong></li>` +
+      (result.bonus
+        ? `<li><span>Касса возврата</span><strong>+${result.bonus.toLocaleString("ru-RU")}</strong></li>`
+        : "") +
+      `<li><span>Аренда</span><strong id="result-cost">…</strong></li>`;
     setMode("result");
+  }
+
+  /* Место в таблице недели считает сервер (rank в me того же публичного
+     leaderboard, что и страница рейтинга) — экран только просит его. */
+  async function paintWeekRank() {
+    const el = $("result-rank");
+    try {
+      const data = await api("/api/game/leaderboard?period=week&limit=1");
+      const rank = data.me && data.me.rank;
+      if (!rank) return;
+      const players = data.totals && data.totals.players;
+      el.textContent =
+        rank +
+        "-е место недели" +
+        (players ? " · пилотов в таблице: " + players : "");
+    } catch (error) {
+      /* Ранг не критичен: строка остаётся «Поездка сохранена». */
+    }
   }
 
   function paintCompleted(rental) {
     state.rental = rental;
     const r = rental.game_result;
     if (r) {
-      const grade = core.grade(r.score).grade;
+      const ladder = core.grade(r.score);
       paintOutcome({
         ...r,
         time: r.duration_seconds,
@@ -1094,13 +1298,17 @@
         profit: r.profit_kopecks,
         bestCombo: r.best_combo,
         won: r.reason === "quit" && r.profit_kopecks > 0,
-        grade,
-        stars: grade === "S" ? 3 : grade === "A" ? 2 : grade === "B" ? 1 : 0,
+        grade: ladder.grade,
+        stars: ladder.stars,
       });
     } else {
       setMode("result");
       $("result-title").textContent = "Поездка завершена";
       $("result-score").textContent = "";
+      /* Экран без результата не должен доезжать с полями прошлой смены. */
+      $("result-grade").textContent = "";
+      $("result-stars").innerHTML = "";
+      $("result-caption").textContent = "";
       $("result-stats").innerHTML =
         '<li><span>Аренда</span><strong id="result-cost"></strong></li>';
       $("result-gif").hidden = true;
@@ -1110,6 +1318,7 @@
     $("result-receipt").hidden = false;
     $("result-retry").hidden = true;
     $("result-rank").textContent = "Поездка сохранена";
+    if (r) paintWeekRank();
     try {
       localStorage.removeItem(RUN_KEY + rental.id);
     } catch (error) {
@@ -1125,6 +1334,7 @@
     saveRecord(state.world.car.id, result);
     paintOutcome(result);
     persistRun();
+    audio.cut("damage");
     audio.sfx(result.won ? "win" : "lose");
     publishScore(result);
   }
@@ -1156,6 +1366,14 @@
     world.status = "quit";
     core.finish(world, "quit");
     showResult("quit");
+  }
+
+  /* Кнопка обязана показывать фактическое состояние: режим мог включить сам ОС. */
+  function paintCalm() {
+    const btn = $("drive-calm");
+    if (!btn) return;
+    btn.setAttribute("aria-pressed", String(state.calm));
+    btn.textContent = state.calm ? "Без миганий: вкл" : "Без миганий: выкл";
   }
 
   function setMuted(value) {
@@ -1240,6 +1458,15 @@
     $("intro-car").textContent = state.rental.car_name;
     $("intro-tariff").textContent =
       money(car.rate_kopecks) + "/мин · 1,5 с игры = 1 мин поездки";
+    /* Шпаргалка свёрнута, но первый заезд без неё — слепой: из семи живых смен
+       новой экономики четыре кончились аварией без единого нажатия V, а в трёх
+       игрок ни разу не платил взятку. */
+    $("intro-help-text").textContent = helpText();
+    try {
+      if (!localStorage.getItem(INTRO_HELP_KEY)) $("intro-help").open = true;
+    } catch (error) {
+      $("intro-help").open = true;
+    }
     state.world = createWorld(true);
     const palette = carPalette(car);
     art.playerCar($("car-preview").getContext("2d"), {
@@ -1262,10 +1489,25 @@
     $("drive-sound").onclick = () => setMuted(!state.muted);
     $("drive-calm").onclick = () => {
       state.calm = !state.calm;
-      $("drive-calm").setAttribute("aria-pressed", String(state.calm));
+      try {
+        localStorage.setItem(CALM_KEY, JSON.stringify({ calm: state.calm }));
+      } catch (error) {
+        void error;
+      }
+      paintCalm();
     };
+    paintCalm();
+    /* Настройку «уменьшить движение» в ОС игрок мог сменить уже в игре */
+    if (calmQuery && typeof calmQuery.addEventListener === "function") {
+      calmQuery.addEventListener("change", (e) => {
+        if (savedCalm() !== null) return;
+        state.calm = !!e.matches;
+        paintCalm();
+      });
+    }
     document.addEventListener("visibilitychange", () => {
       if (document.hidden && state.mode === "playing") togglePause(true);
+      if (!document.hidden) void heartbeat();
     });
     // Autostart is silent until the first gesture unlocks browser audio.
     window.addEventListener(
@@ -1290,6 +1532,10 @@
     requestAnimationFrame(loop);
     if (state.rental.status === "completed") paintCompleted(state.rental);
     else if (state.rental.status === "active") await start();
+    const heartbeatTimer = setInterval(heartbeat, 30000);
+    window.addEventListener("pagehide", () => clearInterval(heartbeatTimer), {
+      once: true,
+    });
   }
 
   global.DriveGame = {

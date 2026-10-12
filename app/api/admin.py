@@ -7,7 +7,7 @@ from app.core.db import get_db
 from app.core.security import admin_user
 from app.models import AuditEvent, Car, Rental, SupportTicket, User
 from app.schemas import CarInput, CarOut, RentalOut
-from app.services.rentals import expire_reservations, rental_view
+from app.services.rentals import close_stale, expire_rentals, rental_view
 
 router = APIRouter(prefix="/api/admin", tags=["Администратор"], dependencies=[Depends(admin_user)])
 
@@ -34,7 +34,7 @@ def edit_car(
 
 @router.get("/summary")
 def summary(db: Session = Depends(get_db)):
-    expire_reservations(db)
+    expire_rentals(db)
     return {
         "cars": db.scalar(select(func.count(Car.id))),
         "active_rentals": db.scalar(select(func.count(Rental.id)).where(Rental.status == "active")),
@@ -70,6 +70,27 @@ def rentals(
         rental_view(db, row)
         for row in db.scalars(query.order_by(Rental.id.desc()).offset(offset).limit(limit)).all()
     ]
+
+
+@router.post("/rentals/{rental_id}/close", response_model=RentalOut)
+def close_rental(
+    rental_id: int, user: User = Depends(admin_user), db: Session = Depends(get_db)
+):
+    try:
+        rental = close_stale(db, rental_id)
+        db.add(
+            AuditEvent(
+                actor_id=user.id,
+                action="rental.force_closed",
+                target=f"rental:{rental_id}",
+            )
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    db.refresh(rental)
+    return rental_view(db, rental)
 
 
 @router.get("/audit")

@@ -313,3 +313,25 @@ test("object loading has a procedural fallback and a single PNG retry", () => {
   assert.equal(headless.draws.length, 0);
   assert.equal(headless.stack.length, 0);
 });
+
+test("every act of the shift owns a distinct, complete night", () => {
+  const { art } = renderer();
+  const phases = require("./game-sim.cjs").core.PHASES;
+  const keys = ["sky", "block", "lit", "glow", "neon", "curb"];
+  const skies = [];
+  for (const phase of phases) {
+    /* фоновый рендер молча подставляет night, если tint переименован */
+    const pal = art.PALETTE[phase.tint];
+    assert.ok(pal, `act "${phase.name}" has no palette for tint ${phase.tint}`);
+    for (const key of keys)
+      assert.ok(pal[key] !== undefined, `${phase.tint} palette misses ${key}`);
+    assert.equal(pal.sky.length, 3, `${phase.tint} sky must have three stops`);
+    assert.ok(pal.neon.length >= 3, `${phase.tint} needs at least three neons`);
+    skies.push(pal.sky.join(","));
+  }
+  assert.equal(
+    new Set(skies).size,
+    phases.length,
+    "acts must not repeat the same sky",
+  );
+});

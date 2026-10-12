@@ -114,7 +114,8 @@ let refreshSequence = 0,
   historyPage = 0,
   selectedCar = null,
   activeReceivedAt = 0,
-  activeMarkupKey = "";
+  activeMarkupKey = "",
+  armedReturn = 0;
 function rememberCar(car) {
   if (!car) return;
   try {
@@ -137,9 +138,17 @@ async function refresh() {
       limit: 100,
     });
     $("cars").setAttribute("aria-busy", "true");
-    let cars;
+    let cars, active;
     try {
-      cars = await api("/cars?" + params);
+      /* Баннер и карточки зависят от одной активной аренды: каталог без неё
+         нарисовал бы «Поехать» на машине, которая уже занята этим же
+         пользователем, и второй запрос переписал бы карточки на глазах. */
+      [cars, active] = await Promise.all([
+        api("/cars?" + params),
+        user && $("active-trip")
+          ? api("/rentals/current").catch(() => null)
+          : Promise.resolve(null),
+      ]);
     } catch (e) {
       if (sequence === refreshSequence) {
         $("cars").setAttribute("aria-busy", "false");
@@ -150,6 +159,11 @@ async function refresh() {
     }
     $("catalog-error").hidden = true;
     if (sequence !== refreshSequence) return;
+    if ($("active-trip")) {
+      activeRental = active;
+      activeReceivedAt = performance.now();
+      renderActive();
+    }
     currentCars = cars;
     $("cars").setAttribute("aria-busy", "false");
     $("result-count").textContent = cars.length
@@ -157,13 +171,23 @@ async function refresh() {
       : "Ничего не найдено. Попробуйте изменить фильтры.";
     $("cars").innerHTML =
       cars
-        .map(
-          (c) =>
-            `<article class="card">
+        .map((c) => {
+          /* Своя машина не имеет права быть тупиком: заглушенная кнопка без
+             объяснения и без ссылки в игру — это ровно то состояние, из
+             которого пользователь не мог выбраться. */
+          const mine =
+            activeRental &&
+            activeRental.car_id === c.id &&
+            ["reserved", "active"].includes(activeRental.status);
+          return `<article class="card">
         <span class="badge">${labels[c.category]} · ${
           c.fuel < 10 && c.status === "available"
             ? "Ожидает заправки"
-            : labels[c.status]
+            : mine
+              ? activeRental.status === "active"
+                ? "Ваша поездка"
+                : "Ваша бронь"
+              : labels[c.status]
         }</span>
 
         <div class="car-image">
@@ -184,14 +208,20 @@ async function refresh() {
           ${money(c.rate_kopecks)} <small>/ мин</small>
         </div>
 
-        <button
+        ${
+          mine
+            ? activeRental.status === "active"
+              ? `<a class="drive-cta" href="${driveHref(activeRental.id)}">Продолжить поездку</a>`
+              : `<button class="primary" data-action="start" data-id="${activeRental.id}">Начать поездку</button>`
+            : `<button
           class="primary"
           ${screen === "admin-fleet" ? "hidden" : ""}
           data-reserve="${c.id}"
           ${c.status !== "available" || c.fuel < 10 ? "disabled" : ""}
         >
           ${user ? "Поехать" : "Войти и поехать"}
-        </button>
+        </button>`
+        }
 
         ${
           screen === "admin-fleet" &&
@@ -207,8 +237,8 @@ async function refresh() {
                }</button>`
             : ""
         }
-      </article>`,
-        )
+      </article>`;
+        })
         .join("") || "<p>В этом классе пока нет автомобилей.</p>";
   }
   if (user && $("rentals")) {
@@ -234,7 +264,7 @@ async function refresh() {
       trips
         .map(
           (r) =>
-            `<article class="trip"><div><strong>${escape(r.car_name)} · ${escape(r.plate)}</strong><p>№${r.id} · ${new Date(r.created_at).toLocaleString("ru-RU")}<br>${labels[r.status]} · ${money(r.rate_kopecks)}/мин${r.status === "completed" ? " · Итого " + money(r.total_kopecks) : ""}${r.game_result ? `<br>${r.game_result.score.toLocaleString("ru-RU")} очков · ${tripStats(r.game_result)} · уровень ${r.game_result.level}` : ""}</p></div><div class="actions">${r.status === "reserved" ? `<button class="primary" data-action="start" data-id="${r.id}">Начать поездку</button><button data-action="cancel" data-id="${r.id}">Отменить бронь</button>` : ""}${r.status === "completed" ? `<a class="receipt-link" href="/api/rentals/${r.id}/receipt" target="_blank" rel="noopener">Итоги ↗</a>` : ""}${r.status === "active" ? `<a class="primary receipt-link" href="${driveHref(r.id)}">Продолжить поездку</a>` : ""}</div></article>`,
+            `<article class="trip"><div><strong>${escape(r.car_name)} · ${escape(r.plate)}</strong><p>№${r.id} · ${new Date(r.created_at).toLocaleString("ru-RU")}<br>${labels[r.status]} · ${money(r.rate_kopecks)}/мин${r.status === "completed" ? " · Итого " + money(r.total_kopecks) : ""}${r.game_result ? `<br>${r.game_result.score.toLocaleString("ru-RU")} очков · ${tripStats(r.game_result)} · уровень ${r.game_result.level}` : ""}</p></div><div class="actions">${r.status === "reserved" ? `<button class="primary" data-action="start" data-id="${r.id}">Начать поездку</button><button data-action="cancel" data-id="${r.id}">Отменить бронь</button>` : ""}${r.status === "completed" ? `<a class="receipt-link" href="/api/rentals/${r.id}/receipt" target="_blank" rel="noopener">Итоги ↗</a>` : ""}${r.status === "active" ? `<a class="drive-cta" href="${driveHref(r.id)}">Продолжить поездку</a>` : ""}</div></article>`,
         )
         .join("") || "<p>Пока нет поездок. Выберите автомобиль в каталоге.</p>";
   }
@@ -339,10 +369,54 @@ document.addEventListener("click", async (e) => {
   const b = e.target.closest("button");
   if (!b) return;
   try {
+    if (b.dataset.returnRental) {
+      /* Возврат — финансовое действие: первый клик только называет цену,
+         второй отправляет запрос. */
+      if (b.dataset.armed !== "1") {
+        armedReturn = Number(b.dataset.returnRental);
+        b.dataset.armed = "1";
+        b.textContent = "Подтвердите возврат";
+        return;
+      }
+      b.disabled = true;
+      try {
+        await api(`/rentals/${b.dataset.returnRental}/return`, {
+          method: "POST",
+        });
+      } catch (error) {
+        armedReturn = 0;
+        b.dataset.armed = "";
+        b.textContent = "Вернуть машину без игры";
+        throw error;
+      }
+      armedReturn = 0;
+      await refresh();
+      message("Машина возвращена, поездка закрыта");
+      return;
+    }
     if (b.dataset.reserve) {
       if (!user) {
         goLogin();
         return;
+      }
+      /* Диалог, который сервер заведомо отклонит с 409, открывать нельзя:
+         у одной учётной записи не больше одной незавершённой поездки. Спрашиваем
+         сервер, а не верим памяти — поездка могла завершиться в другой вкладке. */
+      if (activeRental) {
+        const open = await api("/rentals/current").catch(() => activeRental);
+        activeRental = open;
+        activeReceivedAt = performance.now();
+        renderActive();
+        if (open) {
+          message(
+            (open.status === "active"
+              ? `Поездка №${open.id} на «${open.car_name}» ещё не возвращена`
+              : `Бронь №${open.id} на «${open.car_name}» ещё активна`) +
+              " — начните заезд или верните машину вверху страницы",
+          );
+          $("active-trip")?.scrollIntoView?.({ block: "nearest" });
+          return;
+        }
       }
       selectedCar = currentCars.find((c) => c.id === Number(b.dataset.reserve));
       if (!selectedCar) return;
@@ -407,6 +481,13 @@ function carIllustration(category) {
     "#9db3a7";
   return `<svg viewBox="0 0 480 220" role="presentation"><ellipse cx="244" cy="187" rx="189" ry="14" fill="#17312e" opacity=".08"/><path d="M51 156L77 111L151 98L203 53L322 53L378 105L422 125L430 166H48Z" fill="${color}"/><path d="M171 99L211 63H313L349 101Z" fill="#29423e"/><path d="M268 63V100" stroke="${color}" stroke-width="8"/><path d="M61 134H89M394 132H417" stroke="#f9ffda" stroke-width="8"/><path d="M175 133H326" stroke="#17312e" stroke-opacity=".2" stroke-width="3"/><circle cx="125" cy="165" r="31" fill="#243631"/><circle cx="125" cy="165" r="15" fill="#ccd4cf"/><circle cx="362" cy="165" r="31" fill="#243631"/><circle cx="362" cy="165" r="15" fill="#ccd4cf"/></svg>`;
 }
+function returnAvailable(trip, now) {
+  return (
+    trip.status === "active" &&
+    !!trip.closeable_at &&
+    Date.parse(trip.closeable_at) <= now
+  );
+}
 function renderActive() {
   if (!$("active-trip")) return;
   const trip = activeRental;
@@ -416,9 +497,27 @@ function renderActive() {
     return;
   }
   const reserved = trip.status === "reserved";
+  const now =
+    Date.parse(trip.server_now) + (performance.now() - activeReceivedAt);
   if (!reserved) {
-    $("active-trip").innerHTML =
-      `<div><p class="eyebrow">ПОЕЗДКА</p><h2>${escape(trip.car_name)}</h2><div class="actions"><a class="primary receipt-link" href="${driveHref(trip.id)}">Продолжить поездку</a></div></div>`;
+    /* Ключ вместо перерисовки каждую секунду: пересобирать баннер с
+     подтверждением возврата нельзя — сбрасывался бы вооружённый клик. */
+    const closable = returnAvailable(trip, now);
+    const key = "run:" + trip.id + (closable ? ":stale" : ":live");
+    if (activeMarkupKey !== key) {
+      activeMarkupKey = key;
+      const armed = armedReturn === trip.id;
+      $("active-trip").innerHTML =
+        `<div><p class="eyebrow">ПОЕЗДКА</p><h2>${escape(trip.car_name)}</h2><p>${escape(trip.plate)}</p><div class="actions"><a class="drive-cta" href="${driveHref(trip.id)}">Продолжить поездку</a>${
+          closable
+            ? `<button data-return-rental="${trip.id}"${armed ? ' data-armed="1"' : ""}>${armed ? "Подтвердите возврат" : "Вернуть машину без игры"}</button>`
+            : ""
+        }</div>${
+          closable
+            ? `<p class="active-note">Поездка давно не подтверждала активность. Вернуть машину можно и без заезда: спишем одну минуту тарифа — ${money(trip.rate_kopecks)}, а автомобиль вернётся в автопарк.</p>`
+            : ""
+        }</div>`;
+    }
     return;
   }
   const key = trip.id + ":" + trip.status;
@@ -427,8 +526,6 @@ function renderActive() {
     $("active-trip").innerHTML =
       `<div><p class="eyebrow">ВАША БРОНЬ</p><h2>${escape(trip.car_name)}</h2><p>${escape(trip.plate)} · ${escape(trip.address)}</p><p id="live-price"></p><div class="actions"><button class="primary" data-action="start" data-id="${trip.id}">Начать поездку</button><button data-action="cancel" data-id="${trip.id}">Отменить бронь</button></div></div><div class="timer"><strong id="live-time"></strong><span>осталось до отмены</span></div>`;
   }
-  const now =
-    Date.parse(trip.server_now) + (performance.now() - activeReceivedAt);
   const seconds = reserved
     ? Math.max(0, Math.ceil((Date.parse(trip.expires_at) - now) / 1000))
     : Math.max(0, Math.floor((now - Date.parse(trip.started_at)) / 1000));
@@ -456,6 +553,7 @@ function clearAccount() {
   currentTrips = [];
   activeRental = null;
   activeMarkupKey = "";
+  armedReturn = 0;
   historyPage = 0;
   refreshSequence++;
   for (const dialog of document.querySelectorAll("dialog[open]"))

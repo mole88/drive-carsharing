@@ -75,6 +75,10 @@
         <div class="hud-chip hud-cash">
           <span class="hud-label">КАССА</span
           ><strong id="hud-cash">5 000 ₽</strong>
+          <small
+            id="hud-cashout"
+            title="Касса возврата очками: четверть очков + 4 000 за каждый целой бампер + 8 000 за тихий розыск. Начисляется только при добровольном возврате."
+          ></small>
         </div>
         <div class="hud-chip hud-level">
           <span class="hud-label">ДАВЛЕНИЕ</span
@@ -96,10 +100,12 @@
         <small id="hud-raid-note">жми W — оцепление догоняет</small>
       </div>
       <div class="hud-economy">
-        <span>Выручка <b id="hud-revenue">0 ₽</b></span>
-        <span>Аренда <b id="hud-rent">0 ₽</b> · <b id="hud-rate"></b></span>
-        <span>Игра: прибыль <b id="hud-profit">0 ₽</b></span>
-        <span
+        <span class="eco-revenue">Выручка <b id="hud-revenue">0 ₽</b></span>
+        <span class="eco-rent"
+          >Аренда <b id="hud-rent">0 ₽</b> · <b id="hud-rate"></b
+        ></span>
+        <span class="eco-profit">Прибыль смены <b id="hud-profit">0 ₽</b></span>
+        <span class="eco-when"
           ><b id="hud-clock">0 мин</b> · <b id="hud-distance">0,0 км</b></span
         >
         <small id="hud-debt" hidden></small>
@@ -121,6 +127,7 @@
             <span id="bribe-note">ПРОБЕЛ / Взятка</span>
           </p>
           <div class="bribe-bar"><i id="bribe-fill"></i></div>
+          <small id="bribe-alt" hidden></small>
         </div>
         <button id="hud-retire" class="hud-retire" type="button">
           Вернуть машину
@@ -177,19 +184,22 @@
           ><a href="/cars">Автомобили</a>
         </div>
         <p class="touch-instructions">Веди пальцем по дороге.</p>
-        <details class="intro-help">
+        <p class="intro-goal" id="intro-goal">
+          Цель смены — окупить тариф: наличность сбитых силуэтов идёт в кассу, а
+          машина, возвращённая в плюс, доплачивает четверть набранных очков к
+          оценке.
+        </p>
+        <details class="intro-help" id="intro-help">
           <summary>Управление</summary>
-          <p>
-            A/D — руль · W/S — газ/тормоз<br />Shift — нитро · пробел —
-            взятка<br />P — пауза · V — завершить
-          </p>
+          <p id="intro-help-text"></p>
         </details>
       </div>
     </div>
     <div class="overlay" id="drive-pause" hidden>
       <div class="overlay-card narrow">
         <h2>Пауза</h2>
-        <p>A/D — руль · W/S — газ<br />Shift — нитро · пробел — взятка</p>
+        <p id="pause-help"></p>
+        <p class="pause-state" id="pause-state"></p>
         <div class="actions">
           <button class="primary" id="resume" type="button">Продолжить</button
           ><button id="quit" type="button">Завершить поездку</button>
@@ -207,6 +217,7 @@
             <p id="result-score"></p>
             <p id="result-meta"></p>
             <p class="result-stars" id="result-stars" aria-label="Медали"></p>
+            <p class="result-caption" id="result-caption"></p>
           </div>
         </div>
         <ul class="stats" id="result-stats"></ul>

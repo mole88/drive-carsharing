@@ -51,6 +51,7 @@ async function screen(name, options = {}) {
   const requests = [];
   const errors = [];
   const audioCalls = [];
+  const mediaHandlers = [];
   const virtualConsole = new VirtualConsole();
   virtualConsole.on("jsdomError", (error) => {
     if (!error.message.includes("Not implemented: navigation"))
@@ -70,6 +71,7 @@ async function screen(name, options = {}) {
   const dom = new JSDOM(html, {
     url: "http://localhost/" + (name === "home" ? "" : name) + query,
     runScripts: "outside-only",
+    pretendToBeVisual: true,
     virtualConsole,
   });
   const w = dom.window;
@@ -102,12 +104,23 @@ async function screen(name, options = {}) {
         };
       }
       const body = JSON.parse(options2.body);
+      /* app/services/rentals.py заводит строку таблицы только для
+         заездов от 10 секунд с положительными очками. */
+      w.tabled = body.duration_seconds >= 10 && body.score > 0;
       data = {
         ...(options.current || rental),
         status: "completed",
         total_kopecks: 900,
         game_result: { ...body, car_name: "Kia Rio", category: "economy" },
       };
+    } else if (/^\/api\/rentals\/\d+\/heartbeat$/.test(route)) {
+      if (options.failHeartbeat)
+        return {
+          ok: false,
+          status: options.failHeartbeat,
+          json: async () => ({ detail: "Trip unavailable" }),
+        };
+      data = { ...(options.current || rental), status: "active" };
     } else if (/^\/api\/rentals\/\d+\/start$/.test(route))
       data = { ...(options.current || rental), status: "active" };
     else if (/^\/api\/rentals\/\d+$/.test(route))
@@ -117,6 +130,12 @@ async function screen(name, options = {}) {
         options2.method === "POST"
           ? { ...rental, status: "reserved" }
           : options.rentals || [];
+    else if (route === "/api/game/leaderboard" && options.failBoard)
+      return {
+        ok: false,
+        status: 500,
+        json: async () => ({ detail: "Board offline" }),
+      };
     else if (route === "/api/game/leaderboard")
       data = {
         period: "week",
@@ -140,7 +159,10 @@ async function screen(name, options = {}) {
           },
         ],
         totals: { players: 1, runs: 1 },
-        me: user ? { rank: 2, score: 90000, best_ever: 90000, plays: 1 } : null,
+        me:
+          user && w.tabled !== false
+            ? { rank: 2, score: 90000, best_ever: 90000, plays: 1 }
+            : null,
       };
     else if (route === "/api/game/scores")
       data = {
@@ -158,7 +180,11 @@ async function screen(name, options = {}) {
         status: 404,
         json: async () => ({ detail: "Missing" }),
       };
-    return { ok: true, status: 200, json: async () => data };
+    return {
+      ok: true,
+      status: 200,
+      json: async () => JSON.parse(JSON.stringify(data)),
+    };
   };
   vm.runInContext(read("app/static/app.js"), dom.getInternalVMContext());
   if (name === "leaderboard")
@@ -177,7 +203,14 @@ async function screen(name, options = {}) {
         "drive.selectedCar",
         JSON.stringify(options.storedCar),
       );
-    w.matchMedia = () => ({ matches: false });
+    w.matchMedia = (query) => ({
+      matches:
+        (!!options.touch && /pointer:\s*coarse/.test(query)) ||
+        (!!options.reduceMotion && /prefers-reduced-motion/.test(query)),
+      addEventListener: (type, fn) => {
+        if (/prefers-reduced-motion/.test(query)) mediaHandlers.push(fn);
+      },
+    });
     w.requestAnimationFrame = () => 1;
     w.HTMLCanvasElement.prototype.getContext = () => ({});
     w.HTMLElement.prototype.scrollIntoView = () => {};
@@ -212,7 +245,14 @@ async function screen(name, options = {}) {
     vm.runInContext(read("app/static/game.js"), dom.getInternalVMContext());
   }
   await pause();
-  return { w, requests, errors, audioCalls, close: () => dom.window.close() };
+  return {
+    w,
+    requests,
+    errors,
+    audioCalls,
+    mediaHandlers,
+    close: () => dom.window.close(),
+  };
 }
 
 test("drive page ships canvas, HUD and every overlay", async () => {
@@ -224,6 +264,7 @@ test("drive page ships canvas, HUD and every overlay", async () => {
     for (const id of [
       "hud-score",
       "hud-cash",
+      "hud-cashout",
       "hud-level",
       "hud-clock",
       "hud-raid",
@@ -235,7 +276,12 @@ test("drive page ships canvas, HUD and every overlay", async () => {
       "bribe-prompt",
       "bribe-cost",
       "drive-intro",
+      "intro-goal",
+      "intro-help",
+      "intro-help-text",
       "drive-pause",
+      "pause-help",
+      "pause-state",
       "drive-result",
       "drive-start",
       "drive-sound",
@@ -248,6 +294,7 @@ test("drive page ships canvas, HUD and every overlay", async () => {
       "result-grade",
       "result-stats",
       "result-stars",
+      "result-caption",
       "result-meta",
       "result-rank",
       "result-gif",
@@ -330,6 +377,86 @@ test("active rental resumes by its rental ID without the default counter", async
   } finally {
     p.close();
   }
+});
+
+test("каждое событие ядра имеет голос или явное право молчать", () => {
+  const coreSrc = read("app/static/game-core.js");
+  const uiSrc = read("app/static/game.js");
+  const audioSrc = read("app/static/game-audio.js");
+  const emitted = new Set(
+    [...coreSrc.matchAll(/emit\(world, "([a-zA-Z]+)"/g)].map((m) => m[1]),
+  );
+  assert.ok(
+    emitted.size >= 20,
+    "ядро перестало испускать события? найдено " + emitted.size,
+  );
+
+  const mapBlock = /const SFX_BY_EVENT = \{([\s\S]*?)\n  \};/.exec(uiSrc);
+  assert.ok(mapBlock, "карта SFX_BY_EVENT не найдена");
+  const mapped = new Map(
+    [...mapBlock[1].matchAll(/^\s+([a-zA-Z]+):\s*"([a-zA-Z]+)"/gm)].map((m) => [
+      m[1],
+      m[2],
+    ]),
+  );
+
+  const voices = new Set(
+    [
+      ...(/const SFX = \{([\s\S]*?)\n  \};/.exec(audioSrc)?.[1] || "").matchAll(
+        /^\s{4}([a-zA-Z]+)\(/gm,
+      ),
+    ].map((m) => m[1]),
+  );
+  const slots = new Set(
+    [
+      ...(
+        /const SAMPLES = \{([\s\S]*?)\n  \};/.exec(audioSrc)?.[1] || ""
+      ).matchAll(/^\s{4}([a-zA-Z]+):/gm),
+    ].map((m) => m[1]),
+  );
+
+  /* Экран сам озвучивает исход (win/lose), поэтому финальные события в карте не нужны */
+  const allowedSilence = {
+    end: "исход озвучивает showResult через win/lose",
+    finished: "то же самое: финал играет одним из двух слотов",
+    /* тариф тикает каждую игровую минуту (1,5 с реального времени): озвучивать
+       каждый тик — значит превратить счёт в пулемёт. Звук имеет только момент,
+       когда наличность кончилась и тариф пошёл в долг (debtStart). */
+    rent: "минутный тик тарифа",
+  };
+
+  for (const name of emitted) {
+    if (!mapped.has(name)) {
+      assert.ok(
+        allowedSilence[name],
+        "событие " +
+          name +
+          " не маппится ни на один звук и не имеет разрешения молчать",
+      );
+      continue;
+    }
+    const slot = mapped.get(name);
+    assert.ok(
+      voices.has(slot) || slots.has(slot),
+      "карта ждёт голос " +
+        slot +
+        " для события " +
+        name +
+        ", а его нет в game-audio.js",
+    );
+  }
+  for (const name of Object.keys(allowedSilence))
+    assert.ok(
+      emitted.has(name),
+      "разрешение молчать для " + name + " устарело",
+    );
+
+  /* эти четыре момента раньше были немы: ядро их слало, экран молчал */
+  for (const name of ["nitroEnd", "powerEnd", "droneMiss", "debtStart"])
+    assert.ok(
+      mapped.has(name),
+      "событие " + name + " снова осталось без звука",
+    );
 });
 
 test("mini-game assets are plain files allowed by the site CSP", () => {
@@ -484,6 +611,65 @@ test("the HUD shows pressure instead of a shift countdown", async () => {
       /\d|газ|держит|сидит/,
     );
     assert.match(d.getElementById("hud-retire").textContent, /Забрать|Вернуть/);
+    world.stats.cashEarned = 3000000;
+    world.stats.cashSpent = 0;
+    world.stats.rentalCost = 100000;
+    world.player.score = 200000;
+    world.player.heat = 0.2;
+    g.hud(1 / 60);
+    const cashout = p.w.GameCore.cashoutAt(world);
+    assert.ok(cashout > 0, "касса возврата считается при плюсовой прибыли");
+    const cashoutEl = d.getElementById("hud-cashout");
+    assert.equal(cashoutEl.hidden, false, "при плюсе сумма возврата видна");
+    assert.equal(
+      cashoutEl.textContent,
+      "+" + cashout.toLocaleString("ru-RU") + " очк.",
+      "HUD обязан показывать ту же кассу возврата, что начислит возврат",
+    );
+    assert.match(d.getElementById("hud-retire").title, /сгорит/);
+    world.stats.cashEarned = 0;
+    world.stats.rentalCost = 500000;
+    g.hud(1 / 60);
+    assert.equal(
+      cashoutEl.hidden,
+      true,
+      "в минус возвращать нечего — плашку убираем, а не кричим о нуле",
+    );
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});
+
+test("смена предупреждает, что приносит новый акт", async () => {
+  const p = await screen("drive", {
+    game: true,
+    query: "?rental=7",
+    current: rental,
+  });
+  try {
+    const d = p.w.document;
+    const g = p.w.DriveGame;
+    const core = p.w.GameCore;
+    const last = core.PHASES[core.PHASES.length - 1];
+    g.start();
+    g.step(1 / 60);
+    const world = g.state.world;
+    world.player.cash = 1e9;
+    world.fx.length = 0;
+    world.time = (last.fromLevel - 1) * core.LEVEL_SECONDS;
+    g.step(1 / 60);
+    g.hud(1 / 60);
+    const pops = world.fx.filter((f) => f.kind === "pop").map((f) => f.text);
+    assert.ok(
+      pops.includes(last.name.toUpperCase()),
+      "экран не назвал новый акт",
+    );
+    assert.ok(
+      pops.includes(last.hint),
+      "акт вошёл без слова о новой опасности",
+    );
+    assert.equal(d.getElementById("hud-phase").textContent, last.name);
     assert.deepEqual(p.errors, []);
   } finally {
     p.close();
@@ -532,14 +718,56 @@ test("the run posts a score the leaderboard service accepts", async () => {
       body.knockdowns <= body.duration_seconds * 12,
       "сбитые кажутся накрученными",
     );
+    const rankLine = p.w.document.getElementById("result-rank").textContent;
     assert.match(
-      p.w.document.getElementById("result-rank").textContent,
-      /сохранена/,
+      rankLine,
+      /2-е место недели/,
+      "место в таблице недели не показано: " + rankLine,
+    );
+    assert.match(rankLine, /пилотов в таблице: 1/);
+    assert.ok(
+      p.requests.some((r) => r.route === "/api/game/leaderboard"),
+      "ранг недели не запрошен",
     );
     assert.equal(
       p.w.document.getElementById("result-receipt").getAttribute("href"),
       "/api/rentals/7/receipt",
     );
+  } finally {
+    p.close();
+  }
+});
+
+test("место недели не ломает экран, если лидерборд недоступен", async () => {
+  const p = await screen("drive", {
+    game: true,
+    query: "?rental=7",
+    current: rental,
+    role: "user",
+    failBoard: true,
+  });
+  try {
+    const g = p.w.DriveGame;
+    g.start();
+    const world = g.state.world;
+    world.time = 240;
+    world.player.score = 400000;
+    world.player.hearts = 3;
+    world.player.cash = 250000;
+    p.w.GameCore.finish(world, "quit");
+    await g.publishScore(world.result);
+    await pause();
+    const line = p.w.document.getElementById("result-rank").textContent;
+    assert.match(
+      line,
+      /Поездка сохранена/,
+      "без ответа лидерборда строка не должна выдумывать ранг: " + line,
+    );
+    assert.ok(
+      p.requests.some((r) => r.route === "/api/rentals/7/game/finish"),
+      "результат всё равно обязан быть отправлен",
+    );
+    assert.deepEqual(p.errors, []);
   } finally {
     p.close();
   }
@@ -557,13 +785,272 @@ test("short runs still complete the rental", async () => {
     );
     assert.equal(JSON.parse(sent.options.body).duration_seconds, 4);
     assert.equal(g.state.rental.status, "completed");
-    assert.match(
-      p.w.document.getElementById("result-rank").textContent,
-      /сохранена/,
+    const shortLine = p.w.document.getElementById("result-rank").textContent;
+    assert.match(shortLine, /Поездка сохранена/);
+    assert.ok(
+      !/место/.test(shortLine),
+      "заезд короче 10 секунд не попадает в таблицу — ранг выдуман быть не может: " +
+        shortLine,
     );
     assert.equal(
       p.w.document.getElementById("result-stats").children.length,
-      3,
+      4,
+      "итоги: комбо, сбито, финал и аренда",
+    );
+    assert.match(
+      p.w.document.getElementById("result-stats").textContent,
+      /машину вернул сам/,
+      "добровольный возврат подписан даже без поля killer",
+    );
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});
+
+test("пауза называет цену возврата и язык управления", async () => {
+  const p = await screen("drive", {
+    game: true,
+    query: "?rental=7",
+    current: rental,
+  });
+  try {
+    const d = p.w.document,
+      g = p.w.DriveGame;
+    g.start();
+    const world = g.state.world;
+    world.time = 90;
+    world.player.hearts = 5;
+    world.player.heat = 0.5;
+    world.player.score = 60000;
+    world.stats.cashEarned = 5200000;
+    world.stats.cashSpent = 0;
+    world.stats.rentalCost = 200000;
+    g.togglePause();
+    assert.equal(g.state.mode, "paused");
+    assert.match(
+      d.getElementById("pause-help").textContent,
+      /Пробел — взятка/,
+      "клавиатурная легенда пропала с паузы",
+    );
+    const cashout = p.w.GameCore.cashoutAt(world);
+    const line = d.getElementById("pause-state");
+    assert.ok(cashout > 0, "заезд обязан давать кассу возврата");
+    assert.ok(
+      line.textContent.includes(
+        "+" + cashout.toLocaleString("ru-RU") + " очк.",
+      ),
+      "строка не совпадает с ядром: " + line.textContent,
+    );
+    assert.equal(line.classList.contains("loss"), false);
+
+    world.stats.cashEarned = 0;
+    world.stats.rentalCost = 900000;
+    g.togglePause();
+    g.togglePause();
+    assert.equal(g.state.mode, "paused");
+    assert.ok(
+      /кассы нет/.test(line.textContent),
+      "в минус возвращать нечего — пауза обязана это сказать: " +
+        JSON.stringify(line.textContent),
+    );
+    assert.equal(line.classList.contains("loss"), true);
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+
+  const phone = await screen("drive", {
+    game: true,
+    query: "?rental=7",
+    current: rental,
+    touch: true,
+  });
+  try {
+    const g = phone.w.DriveGame;
+    g.start();
+    g.togglePause();
+    const help = phone.w.document.getElementById("pause-help").textContent;
+    assert.match(help, /пальцем/, "телефону нужна сенсорная легенда: " + help);
+    assert.ok(!/A\/D/.test(help), "клавиши телефону не объясняют: " + help);
+  } finally {
+    phone.close();
+  }
+});
+
+test("первый заезд получает шпаргалку, а телефон — свои кнопки", async () => {
+  const desk = await screen("drive", {
+    game: true,
+    query: "?rental=7",
+    current: rental,
+  });
+  try {
+    const d = desk.w.document;
+    assert.equal(
+      d.getElementById("intro-help").open,
+      true,
+      "до первой смены шпаргалка обязана быть раскрыта",
+    );
+    assert.match(d.getElementById("intro-goal").textContent, /окупить тариф/);
+    const text = d.getElementById("intro-help-text").textContent;
+    assert.match(text, /Пробел — взятка/);
+    assert.match(text, /V — вернуть машину/);
+    assert.ok(
+      !/Кнопки под игрой/.test(text),
+      "клавиатуре не нужны экранные кнопки",
+    );
+    await desk.w.DriveGame.start();
+    assert.equal(
+      desk.w.localStorage.getItem("drive.intro.help.v1"),
+      "1",
+      "смена началась — шпаргалка не обязана раскрываться сама",
+    );
+    assert.deepEqual(desk.errors, []);
+  } finally {
+    desk.close();
+  }
+
+  const phone = await screen("drive", {
+    game: true,
+    query: "?rental=7",
+    current: rental,
+    touch: true,
+  });
+  try {
+    const text = phone.w.document.getElementById("intro-help-text").textContent;
+    assert.match(text, /пальцем по дороге/);
+    assert.match(text, /кнопки под игрой/i);
+    assert.match(text, /«Взятка»/);
+    assert.ok(!/A\/D/.test(text), "телефону нельзя объяснять клавиши: " + text);
+    assert.deepEqual(phone.errors, []);
+  } finally {
+    phone.close();
+  }
+});
+
+test("промпт взятки учит длине первое окно", async () => {
+  const p = await screen("drive", { game: true, query: "?rental=7" });
+  try {
+    const g = p.w.DriveGame;
+    const d = p.w.document;
+    const w = g.state.world;
+    w.player.encounter = {
+      copId: 1,
+      timer: 2.6,
+      window: 2.6,
+      cost: 200000,
+      shown: 200000,
+      pressed: false,
+    };
+    g.hud(1 / 60);
+    assert.equal(d.getElementById("bribe-prompt").hidden, false);
+    assert.match(d.getElementById("bribe-note").textContent, /ПЕРВЫЙ КОНТАКТ/);
+    assert.equal(d.getElementById("bribe-fill").style.width, "100%");
+    w.player.encounter = { ...w.player.encounter, timer: 1.5, window: 1.5 };
+    g.hud(1 / 60);
+    assert.equal(d.getElementById("bribe-note").textContent, "ПРОБЕЛ / Взятка");
+    assert.equal(d.getElementById("bribe-fill").style.width, "100%");
+    w.player.encounter.timer = 0.75;
+    g.hud(1 / 60);
+    assert.equal(d.getElementById("bribe-fill").style.width, "50%");
+    const alt = d.getElementById("bribe-alt");
+    w.player.nitro = 0;
+    g.hud(1 / 60);
+    assert.equal(alt.hidden, false, "цена отказа показана во время диалога");
+    assert.match(alt.textContent, /протокол/);
+    assert.match(alt.textContent, /бампер/);
+    assert.ok(
+      !/нитро/.test(alt.textContent),
+      "без заряда нитро альтернативу не обещаем",
+    );
+    w.player.nitro = p.w.GameCore.RULES.nitroCost;
+    g.hud(1 / 60);
+    assert.match(alt.textContent, /нитро/, "заряженное нитро предлагает таран");
+    w.player.encounter = null;
+    g.hud(1 / 60);
+    assert.equal(alt.hidden, true, "после диалога строка прячется");
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});
+
+test("на телефоне промпт зовёт на кнопку «Взятка», а не на Пробел", async () => {
+  const p = await screen("drive", {
+    game: true,
+    query: "?rental=7",
+    touch: true,
+  });
+  try {
+    const g = p.w.DriveGame;
+    const d = p.w.document;
+    const w = g.state.world;
+    w.player.encounter = {
+      copId: 1,
+      timer: 1.5,
+      window: 1.5,
+      cost: 200000,
+      shown: 200000,
+      pressed: false,
+    };
+    w.player.nitro = 0;
+    g.hud(1 / 60);
+    const note = d.getElementById("bribe-note").textContent;
+    assert.match(note, /кнопка «Взятка»/);
+    assert.ok(!/ПРОБЕЛ/.test(note), "на таче клавиатуру не обещаем");
+    assert.match(d.getElementById("bribe-alt").textContent, /протокол/);
+    assert.ok(
+      d.getElementById("touch-bribe").classList.contains("armed"),
+      "кнопка «Взятка» подсвечена, пока идёт диалог",
+    );
+    w.player.encounter = null;
+    g.hud(1 / 60);
+    assert.ok(!d.getElementById("touch-bribe").classList.contains("armed"));
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});
+
+test("экран итогов называет, что именно закончило смену", async () => {
+  const p = await screen("drive", { game: true, query: "?rental=7" });
+  try {
+    const g = p.w.DriveGame;
+    const world = g.state.world;
+    world.time = 40;
+    world.player.hearts = 1;
+    world.player.invuln = 0;
+    world.stats.dronesDown = 3;
+    world.stats.dodges = 5;
+    p.w.GameCore.damage(world, 99, "drone");
+    assert.equal(
+      world.killer,
+      "drone",
+      "ядро помнит источник смертельного удара",
+    );
+    g.step(1 / 60);
+    await pause();
+    assert.equal(world.result.reason, "wrecked");
+    assert.equal(world.result.killer, "drone");
+    assert.match(
+      p.w.document.getElementById("result-stats").textContent,
+      /смену закончил БПЛА/,
+    );
+    assert.match(
+      p.w.document.getElementById("result-stats").textContent,
+      /3 сбит · 5 мимо/,
+      "главная угроза смены должна быть видна по цифрам",
+    );
+    const caption = p.w.document.getElementById("result-caption").textContent;
+    const score = world.result.score;
+    assert.ok(
+      caption.includes(p.w.GameCore.grade(score).title),
+      "подпись не совпадает со ступенью ядра: " + caption,
+    );
+    assert.match(
+      caption,
+      /ещё [\d\s]*очк\./,
+      "зазор до следующей ступени не назван",
     );
     assert.deepEqual(p.errors, []);
   } finally {
@@ -677,10 +1164,113 @@ test("completed rentals show their saved result without starting again", async (
       "/static/images/smoking.gif",
     );
     assert.equal(d.getElementById("result-grade").textContent, "S");
+    assert.match(
+      d.getElementById("result-caption").textContent,
+      /Король ночного проспекта/,
+      "название ступени обязано быть на экране, а не только в таблице ядра",
+    );
+    assert.match(
+      d.getElementById("result-caption").textContent,
+      /потолок таблицы/,
+    );
     assert.equal(d.getElementById("result-receipt").hidden, false);
     await g.start();
     assert.equal(g.state.mode, "result");
     assert.ok(!p.requests.some((r) => r.route.includes("/game/finish")));
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});
+
+test("зазор до следующей ступени назван: прод-заезд в 711 очках от C", async () => {
+  const p = await screen("drive", {
+    game: true,
+    query: "?rental=7",
+    current: {
+      ...rental,
+      status: "completed",
+      total_kopecks: 900,
+      game_result: {
+        score: 39289,
+        level: 2,
+        duration_seconds: 40,
+        trip_duration_seconds: 1615.68,
+        distance_meters: 24571,
+        reason: "quit",
+        killer: "retired",
+        profit_kopecks: 1094350,
+        knockdowns: 20,
+        drones: 0,
+        dodges: 0,
+        best_combo: 3,
+      },
+    },
+  });
+  try {
+    const d = p.w.document;
+    const text = d.getElementById("result-caption").textContent;
+    assert.equal(d.getElementById("result-grade").textContent, "D");
+    assert.match(text, /Первая смена/);
+    assert.match(text, /«Довольно бодро»/);
+    assert.match(
+      text,
+      /ещё 711 очк\./,
+      "не хватило 711 из 40 000 — экран обязан это сказать: " + text,
+    );
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});
+
+test("кнопка «Без миганий» честна: показывает настройку ОС и меняется на лету", async () => {
+  const p = await screen("drive", {
+    game: true,
+    query: "?rental=7",
+    reduceMotion: true,
+  });
+  try {
+    const d = p.w.document;
+    const btn = d.getElementById("drive-calm");
+    const g = p.w.DriveGame;
+    assert.equal(g.state.calm, true, "уменьшение движения из ОС учтено");
+    assert.equal(btn.getAttribute("aria-pressed"), "true");
+    assert.match(
+      btn.textContent,
+      /вкл$/,
+      "подпись говорит про текущее состояние",
+    );
+    btn.click();
+    assert.equal(g.state.calm, false);
+    assert.equal(btn.getAttribute("aria-pressed"), "false");
+    assert.match(btn.textContent, /выкл$/);
+    assert.equal(
+      JSON.parse(p.w.localStorage.getItem("drive.nightshift.calm.v1")).calm,
+      false,
+      "выбор игрока переживает перезагрузку",
+    );
+    assert.ok(p.mediaHandlers.length, "изменение настройки ОС слушаем");
+    p.mediaHandlers.forEach((fn) => fn({ matches: true }));
+    assert.equal(
+      g.state.calm,
+      false,
+      "раз игрок выбрал сам — системная настройка не перебивает",
+    );
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});
+
+test("без явного выбора настройка ОС применяется на лету", async () => {
+  const p = await screen("drive", { game: true, query: "?rental=7" });
+  try {
+    const g = p.w.DriveGame;
+    assert.equal(g.state.calm, false);
+    p.mediaHandlers.forEach((fn) => fn({ matches: true }));
+    assert.equal(g.state.calm, true, "настройка ОС до сих пор главный сигнал");
+    assert.match(p.w.document.getElementById("drive-calm").textContent, /вкл$/);
     assert.deepEqual(p.errors, []);
   } finally {
     p.close();
@@ -773,5 +1363,69 @@ test("touch actions fire once, capture a drag and suppress text selection menus"
     assert.deepEqual(p.errors, []);
   } finally {
     p.close();
+  }
+});
+
+test("game keeps an active trip alive and stops heartbeat after completion", async () => {
+  const p = await screen("drive", { game: true, query: "?rental=7" });
+  try {
+    const beats = () =>
+      p.requests.filter((r) => r.route.endsWith("/heartbeat"));
+    assert.equal(beats().length, 1);
+    assert.equal(beats()[0].options.method, "POST");
+    p.w.DriveGame.togglePause(true);
+    p.w.document.dispatchEvent(new p.w.Event("visibilitychange"));
+    await pause();
+    assert.equal(beats().length, 2, "visible paused game retains its lease");
+    Object.defineProperty(p.w.document, "hidden", {
+      configurable: true,
+      value: true,
+    });
+    p.w.document.dispatchEvent(new p.w.Event("visibilitychange"));
+    await pause();
+    assert.equal(beats().length, 2, "hidden page does not keep a car occupied");
+    Object.defineProperty(p.w.document, "hidden", {
+      configurable: true,
+      value: false,
+    });
+    p.w.DriveGame.quitShift();
+    await pause();
+    p.w.document.dispatchEvent(new p.w.Event("visibilitychange"));
+    await pause();
+    assert.equal(beats().length, 2);
+    assert.equal(p.w.DriveGame.state.rental.status, "completed");
+    assert.deepEqual(p.errors, []);
+  } finally {
+    p.close();
+  }
+});
+
+test("an expired lease prevents playing while a brief outage permits retry", async () => {
+  for (const status of [409, 503]) {
+    const p = await screen("drive", {
+      game: true,
+      query: "?rental=7",
+      failHeartbeat: status,
+    });
+    try {
+      assert.equal(
+        p.w.DriveGame.state.mode,
+        status === 409 ? "intro" : "playing",
+      );
+      if (status === 409) {
+        assert.equal(p.w.document.getElementById("drive-start").hidden, true);
+        assert.match(
+          p.w.document.getElementById("intro-perk").textContent,
+          /каталог/,
+        );
+        assert.equal(
+          p.requests.some((r) => r.route.endsWith("/game/finish")),
+          false,
+        );
+      }
+      assert.deepEqual(p.errors, []);
+    } finally {
+      p.close();
+    }
   }
 });
